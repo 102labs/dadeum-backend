@@ -11,16 +11,15 @@ def fast_system_prompt() -> str:
         "You are the backend port of the im-not-ai Korean business rewrite engine. "
         "Perform detection, rewriting, and self-check in one call. "
         "Preserve facts, numbers, dates, names, quotations, protected terms, genre, and register exactly. "
+        "Use user_intent, tone, rewrite_mode, and preserve_formatting to choose rewrite strength, tone, and formatting. "
         "Only edit AI-tell style, translationese, rhythm, structure, and business clarity. "
         "Do not expose hidden reasoning. Return only JSON matching the schema."
     )
 
 
-def fast_user_prompt(request: RewriteRequest, document_type: str, context: dict[str, Any]) -> str:
+def fast_user_prompt(request: RewriteRequest, genre_hint: str, context: dict[str, Any]) -> str:
     payload = {
-        "mode": "fast",
-        "document_type": document_type,
-        "settings": _request_settings(request),
+        **_prompt_header("fast", request, genre_hint),
         "im_not_ai_quick_rules": quick_rules(),
         "metrics_before": context.get("metricsBefore", {}),
         "estimated_genre": context.get("estimatedGenre"),
@@ -32,11 +31,13 @@ def fast_user_prompt(request: RewriteRequest, document_type: str, context: dict[
             "register 보존",
             "잔존 S1 패턴 0건",
             "인공 표현 추가 없음",
+            "user_intent, tone, preserve_formatting 반영",
         ],
         "must_report": [
             "qualityLevel: A/B/C/D",
             "changeRate: 원문 대비 문자 변경률",
             "rollbackRequired: 변경률 50% 초과 또는 의미 보존 실패 시 true",
+            "settingsApplied: user_intent, tone, protected_terms, preserve_formatting 반영 여부",
         ],
         "text": request.text,
     }
@@ -51,11 +52,9 @@ def detect_system_prompt() -> str:
     )
 
 
-def detect_user_prompt(request: RewriteRequest, document_type: str, context: dict[str, Any]) -> str:
+def detect_user_prompt(request: RewriteRequest, genre_hint: str, context: dict[str, Any]) -> str:
     payload = {
-        "mode": "strict.detect",
-        "document_type": document_type,
-        "settings": _request_settings(request),
+        **_prompt_header("strict.detect", request, genre_hint),
         "taxonomy": ai_tell_taxonomy(),
         "metrics_before": context.get("metricsBefore", {}),
         "estimated_genre": context.get("estimatedGenre"),
@@ -74,13 +73,14 @@ def strict_rewrite_system_prompt() -> str:
     return (
         "You are korean-style-rewriter for the im-not-ai strict pipeline. "
         "Rewrite only finding-backed AI-tell patterns. Preserve meaning, protected spans, genre, and register. "
+        "Use user_intent, tone, rewrite_mode, and preserve_formatting to choose rewrite strength, tone, and formatting. "
         "Do not add new claims, examples, metaphors, facts, or citations. Return only JSON matching the schema."
     )
 
 
 def strict_rewrite_user_prompt(
     request: RewriteRequest,
-    document_type: str,
+    genre_hint: str,
     context: dict[str, Any],
     detection: DetectionResult,
     previous_revised_text: str | None = None,
@@ -88,9 +88,7 @@ def strict_rewrite_user_prompt(
     review_feedback: list[str] | None = None,
 ) -> str:
     payload = {
-        "mode": "strict.rewrite",
-        "document_type": document_type,
-        "settings": _request_settings(request),
+        **_prompt_header("strict.rewrite", request, genre_hint),
         "quick_rules": quick_rules(),
         "rewriting_playbook": rewriting_playbook(),
         "metrics_before": context.get("metricsBefore", {}),
@@ -121,15 +119,13 @@ def audit_system_prompt() -> str:
 
 def audit_user_prompt(
     request: RewriteRequest,
-    document_type: str,
+    genre_hint: str,
     context: dict[str, Any],
     revised_text: str,
     changes: list[dict[str, Any]],
 ) -> str:
     payload = {
-        "mode": "strict.audit",
-        "document_type": document_type,
-        "settings": _request_settings(request),
+        **_prompt_header("strict.audit", request, genre_hint),
         "scholarship_constraints": scholarship(),
         "preservation_terms": context.get("preservationTerms", []),
         "checklist_13": [
@@ -165,16 +161,14 @@ def review_system_prompt() -> str:
 
 def review_user_prompt(
     request: RewriteRequest,
-    document_type: str,
+    genre_hint: str,
     context: dict[str, Any],
     detection: DetectionResult,
     revised_text: str,
     audit_warnings: list[str],
 ) -> str:
     payload = {
-        "mode": "strict.review",
-        "document_type": document_type,
-        "settings": _request_settings(request),
+        **_prompt_header("strict.review", request, genre_hint),
         "quick_rules": quick_rules(),
         "metrics_before": context.get("metricsBefore", {}),
         "preservation_terms": context.get("preservationTerms", []),
@@ -194,13 +188,82 @@ def review_user_prompt(
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _request_settings(request: RewriteRequest) -> dict[str, Any]:
+def _prompt_header(mode: str, request: RewriteRequest, genre_hint: str) -> dict[str, Any]:
     return {
-        "intensity": request.intensity,
-        "concision": request.concision,
+        "mode": mode,
+        "genre_hint": genre_hint,
+        "settings": request_settings(request),
+        "rewrite_guidance": rewrite_guidance(request),
+    }
+
+
+def request_settings(request: RewriteRequest) -> dict[str, Any]:
+    return {
+        "user_intent": request.user_intent,
+        "rewrite_mode": request.rewrite_mode,
         "tone": request.tone,
-        "intent": request.intent,
         "protected_terms": request.protected_terms,
-        "focus_categories": request.focus_categories,
+        "max_rounds": request.max_rounds,
         "preserve_formatting": request.preserve_formatting,
     }
+
+
+def rewrite_guidance(request: RewriteRequest) -> dict[str, Any]:
+    return {
+        "user_intent": _user_intent_guidance(request.user_intent),
+        "rewrite_mode": _rewrite_mode_guidance(request.rewrite_mode),
+        "tone": _tone_guidance(request.tone),
+        "protected_terms": _protected_terms_guidance(request.protected_terms),
+        "max_rounds": _max_rounds_guidance(request.rewrite_mode, request.max_rounds),
+        "formatting": _formatting_guidance(request.preserve_formatting),
+        "hard_constraints": [
+            "원문에 없는 사실, 예시, 수치, 인용, 근거를 추가하지 않는다.",
+            "고유명사, 날짜, 숫자, 단위, 직접 인용, protected_terms는 보존한다.",
+            "user_intent가 사실 보존이나 protected_terms와 충돌하면 보존 규칙을 우선한다.",
+        ],
+    }
+
+
+def _user_intent_guidance(user_intent: str) -> str:
+    intent = user_intent.strip()
+    if not intent:
+        return "추가 사용자 지시가 없으므로 일반적인 한국어 비즈니스 윤문을 수행한다."
+    return "사용자가 원하는 수정 방향이다. 의미 보존 범위 안에서 우선 반영한다: " + intent
+
+
+def _rewrite_mode_guidance(rewrite_mode: str) -> str:
+    if rewrite_mode == "strict":
+        return (
+            "정밀 윤문 모드다. 문장 흐름, AI 티 패턴, 어색한 번역투, 과윤문 위험을 검토하고 "
+            "필요하면 최대 라운드 안에서 재윤문한다. 변경률은 원칙적으로 30% 이하로 유지한다."
+        )
+    return (
+        "빠른 윤문 모드다. 의미와 문서 골격을 거의 그대로 두고 명확성, 어색한 표현, 리듬만 가볍게 다듬는다. "
+        "불필요한 재구성은 피하고 변경률은 원칙적으로 20% 이하로 유지한다."
+    )
+
+
+def _tone_guidance(tone: str) -> str:
+    if tone == "formal":
+        return "격식 있는 비즈니스 문체로 조절한다. 예의 있고 단정한 종결, 과장 없는 전문적 표현을 사용한다."
+    if tone == "friendly":
+        return "친근하지만 업무 맥락을 해치지 않는 문체로 조절한다. 지나친 구어체, 감탄, 과장 표현은 피한다."
+    return "기존 톤과 격식을 유지한다. 톤을 새로 만들기보다 어색한 부분만 자연스럽게 정리한다."
+
+
+def _protected_terms_guidance(protected_terms: list[str]) -> str:
+    if not protected_terms:
+        return "사용자가 지정한 보호 용어는 없지만 숫자, 날짜, 고유명사, 직접 인용은 계속 보존한다."
+    return "다음 보호 용어는 철자, 띄어쓰기, 대소문자를 그대로 유지한다: " + ", ".join(protected_terms)
+
+
+def _max_rounds_guidance(rewrite_mode: str, max_rounds: int) -> str:
+    if rewrite_mode == "strict":
+        return f"정밀 검토는 최대 {max_rounds}라운드까지 수행한다. 각 라운드에서 감사/리뷰 피드백을 반영하되 과윤문은 피한다."
+    return "빠른 윤문은 단일 라운드로 끝낸다. max_rounds 값이 있어도 fast 모드에서는 재윤문 루프를 사용하지 않는다."
+
+
+def _formatting_guidance(preserve_formatting: bool) -> str:
+    if preserve_formatting:
+        return "원문의 줄바꿈, 문단, 목록, 번호, 표기 구조를 유지하고 문장 내부 표현만 다듬는다."
+    return "가독성을 위해 문단, 줄바꿈, 목록 구조를 필요한 범위에서 정리할 수 있다."

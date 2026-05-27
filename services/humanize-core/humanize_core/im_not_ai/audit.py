@@ -145,12 +145,12 @@ def split_sentences(text: str) -> list[str]:
     return [match.group(0).strip() for match in _SENTENCE_RE.finditer(text) if match.group(0).strip()]
 
 
-def estimate_genre(document_type: str, text: str) -> str:
-    if document_type in {"blog", "column"}:
+def estimate_genre(genre_hint: str, text: str) -> str:
+    if genre_hint in {"blog", "column"}:
         return "blog"
-    if document_type in {"report", "proposal", "meeting_notes"}:
+    if genre_hint in {"report", "proposal", "meeting_notes"}:
         return "report"
-    if document_type == "email":
+    if genre_hint == "email":
         return "business"
     if re.search(r"칼럼|독자|관점|블로그", text[:500]):
         return "blog"
@@ -477,6 +477,7 @@ def self_check_items(
     missing = missing_preservation_terms(original, revised, protected_terms)
     rate = change_rate(original, revised)
     s1_count = sum(1 for finding in residual_findings if finding.severity == "S1")
+    register_compatible = _formal_register_compatible(original, revised)
     return [
         SelfCheckItem(
             name="고유명사·수치·날짜·인용 보존",
@@ -495,8 +496,8 @@ def self_check_items(
         ),
         SelfCheckItem(
             name="register 보존",
-            passed=_formal_register_compatible(original, revised),
-            note="격식체 호환" if _formal_register_compatible(original, revised) else "격식체 변화 후보",
+            passed=register_compatible,
+            note="격식체 호환" if register_compatible else "격식체 변화 후보",
         ),
         SelfCheckItem(
             name="잔존 S1 패턴 0건",

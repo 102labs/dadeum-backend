@@ -59,40 +59,29 @@ Core accepts:
 ```py
 class RewriteRequest(BaseModel):
     text: str
-    document_type: Literal[
-        "auto",
-        "report",
-        "formal",
-        "email",
-        "proposal",
-        "meeting_notes",
-        "blog",
-        "column",
-    ]
-    intensity: Literal["conservative", "standard", "strong"]
-    concision: Literal["preserve", "tighten", "compact"]
-    tone: Literal["keep", "neutral", "formal", "executive", "friendly"]
-
-    intent: Literal["business_polish"]
+    user_intent: str = ""
+    rewrite_mode: Literal["fast", "strict"] = "fast"
+    tone: Literal["keep", "formal", "friendly"] = "keep"
     protected_terms: list[str] = []
-    quality_mode: Literal["balanced"] = "balanced"
-    focus_categories: list[str] = []
-    max_rounds: Literal[1] = 1
+    max_rounds: int = 1
     preserve_formatting: bool = True
 ```
 
-Next.js should build this Core request by combining the browser-provided four settings with these v1 defaults:
+Next.js should build this Core request by combining the browser-provided text and rewrite controls with internal fields:
 
 ```json
 {
-  "intent": "business_polish",
-  "quality_mode": "balanced",
+  "text": "윤문할 원문",
+  "user_intent": "",
+  "rewrite_mode": "fast",
+  "tone": "keep",
   "protected_terms": [],
-  "focus_categories": [],
   "max_rounds": 1,
   "preserve_formatting": true
 }
 ```
+
+Core infers any internal genre hints from the text itself. `user_intent`, `rewrite_mode`, `tone`, `protected_terms`, `max_rounds`, and `preserve_formatting` are request controls and must shape rewrite strength, tone, preservation, review depth, and formatting behavior. Strict mode uses the requested `max_rounds` value up to 3 rounds; fast mode uses 1 round.
 
 ## Rewrite Response Contract
 
@@ -158,8 +147,8 @@ prepare -> rewrite -> audit -> finalize
 
 Responsibilities:
 
-- `prepare`: enforce maximum input length, split/analyze input as needed, infer document type when `document_type` is `auto`.
-- `rewrite`: map document type, intensity, concision, and tone to model instructions; request structured output from the LLM.
+- `prepare`: enforce maximum input length, split/analyze input as needed, and infer internal genre hints from the text.
+- `rewrite`: map `user_intent`, `rewrite_mode`, `tone`, and `preserve_formatting` to model instructions; request structured output from the LLM.
 - `audit`: check numbers, dates, proper nouns, and protected terms for preservation; add warnings and high risk flags when needed.
 - `finalize`: return `revisedText`, `changes`, `summary`, `warnings`, and `usage`.
 
@@ -208,18 +197,12 @@ Browser request type:
 ```ts
 type RewriteClientRequest = {
   text: string;
-  document_type:
-    | "auto"
-    | "report"
-    | "formal"
-    | "email"
-    | "proposal"
-    | "meeting_notes"
-    | "blog"
-    | "column";
-  intensity: "conservative" | "standard" | "strong";
-  concision: "preserve" | "tighten" | "compact";
-  tone: "keep" | "neutral" | "formal" | "executive" | "friendly";
+  user_intent?: string;
+  rewrite_mode?: "fast" | "strict";
+  tone?: "keep" | "formal" | "friendly";
+  protected_terms?: string[];
+  max_rounds?: number;
+  preserve_formatting?: boolean;
 };
 ```
 

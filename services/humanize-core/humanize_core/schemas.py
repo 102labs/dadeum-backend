@@ -1,21 +1,9 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-DocumentType = Literal[
-    "auto",
-    "report",
-    "formal",
-    "email",
-    "proposal",
-    "meeting_notes",
-    "blog",
-    "column",
-]
-Intensity = Literal["conservative", "standard", "strong"]
-Concision = Literal["preserve", "tighten", "compact"]
-Tone = Literal["keep", "neutral", "formal", "executive", "friendly"]
+Tone = Literal["keep", "formal", "friendly"]
 RewriteMode = Literal["fast", "strict"]
 ChangeType = Literal[
     "clarity",
@@ -32,17 +20,22 @@ class RewriteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1)
-    document_type: DocumentType
-    intensity: Intensity
-    concision: Concision
-    tone: Tone
-    intent: Literal["business_polish"]
-    protected_terms: list[str] = Field(default_factory=list)
-    quality_mode: Literal["balanced"] = "balanced"
+    user_intent: str = ""
     rewrite_mode: RewriteMode = "fast"
-    focus_categories: list[str] = Field(default_factory=list)
+    tone: Tone = "keep"
+    protected_terms: list[str] = Field(default_factory=list)
     max_rounds: int = Field(default=1, ge=1, le=3)
     preserve_formatting: bool = True
+
+    @field_validator("user_intent")
+    @classmethod
+    def normalize_user_intent(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("protected_terms")
+    @classmethod
+    def normalize_protected_terms(cls, value: list[str]) -> list[str]:
+        return [term.strip() for term in value if term.strip()]
 
 
 class Change(BaseModel):

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from humanize_core.api import create_app
 from humanize_core.config import Settings
 from humanize_core.graph import RewriteGraphRunner
+from humanize_core.im_not_ai import prompts
 from humanize_core.im_not_ai.audit import (
     SUPPORTED_QUICK_RULE_IDS,
     finding_density,
@@ -30,7 +31,7 @@ from humanize_core.im_not_ai.schemas import (
     NaturalnessReviewResult,
     StrictRewriteResult,
 )
-from humanize_core.llm import OpenAIRewriteLLM, OpenRouterRewriteLLM, _openai_rewrite_text_format
+from humanize_core.llm import OpenAIRewriteLLM, OpenRouterRewriteLLM, StubRewriteLLM, _openai_rewrite_text_format
 from humanize_core.schemas import Change
 from humanize_core.schemas import RewriteRequest as RewriteRequestForTest
 
@@ -48,14 +49,10 @@ def _settings() -> Settings:
 def _payload(**overrides):
     body = {
         "text": "안녕하세요.  2026년 5월 보고서 문장을 더 명확하게 정리해주세요.",
-        "document_type": "auto",
-        "intensity": "standard",
-        "concision": "tighten",
-        "tone": "formal",
-        "intent": "business_polish",
+        "user_intent": "",
+        "rewrite_mode": "fast",
+        "tone": "keep",
         "protected_terms": ["2026년"],
-        "quality_mode": "balanced",
-        "focus_categories": [],
         "max_rounds": 1,
         "preserve_formatting": True,
     }
@@ -139,12 +136,52 @@ def test_body_hash_mismatch_returns_401():
 
 def test_invalid_enum_returns_422_after_auth_passes():
     client = _client()
-    raw_body = json.dumps(_payload(intensity="wild"), ensure_ascii=False).encode("utf-8")
+    raw_body = json.dumps(_payload(tone="executive"), ensure_ascii=False).encode("utf-8")
     headers = _signed_headers(raw_body)
 
     response = client.post("/v1/rewrite", content=raw_body, headers=headers)
 
     assert response.status_code == 422
+
+
+def test_old_contract_fields_return_422_after_auth_passes():
+    client = _client()
+    body = _payload()
+    body["intensity"] = "standard"
+    body["concision"] = "tighten"
+    body["intent"] = "business_polish"
+    body["quality_mode"] = "balanced"
+    body["focus_categories"] = []
+    raw_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    headers = _signed_headers(raw_body)
+
+    response = client.post("/v1/rewrite", content=raw_body, headers=headers)
+
+    assert response.status_code == 422
+
+
+def test_rewrite_request_defaults_match_new_contract():
+    request = RewriteRequestForTest.model_validate({"text": "문장을 정리합니다."})
+
+    assert request.user_intent == ""
+    assert request.rewrite_mode == "fast"
+    assert request.tone == "keep"
+    assert request.protected_terms == []
+    assert request.max_rounds == 1
+    assert request.preserve_formatting is True
+
+
+def test_rewrite_request_normalizes_intent_and_protected_terms():
+    request = RewriteRequestForTest.model_validate(
+        {
+            "text": "API v1은 2026년에 유지됩니다.",
+            "user_intent": "  더 명확하게  ",
+            "protected_terms": [" API v1 ", "", " 2026년 "],
+        }
+    )
+
+    assert request.user_intent == "더 명확하게"
+    assert request.protected_terms == ["API v1", "2026년"]
 
 
 def test_rewrite_success_returns_structured_response():
@@ -161,6 +198,29 @@ def test_rewrite_success_returns_structured_response():
     assert data["summary"]
     assert data["usage"]["rounds"] == 1
     assert isinstance(data["warnings"], list)
+
+
+def test_stub_rewrite_reflects_user_selected_controls():
+    client = _client()
+    raw_body = json.dumps(
+        _payload(
+            text="보고 문장",
+            user_intent="더 단정하게 정리",
+            tone="formal",
+            preserve_formatting=True,
+        ),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    headers = _signed_headers(raw_body)
+
+    response = client.post("/v1/rewrite", content=raw_body, headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["revisedText"] == "보고 문장."
+    assert "격식 있는 톤" in data["summary"][0]
+    assert "사용자 요청 방향" in data["summary"][0]
+    assert "형식을 보존" in data["summary"][0]
 
 
 def test_valid_strict_request_uses_structured_response():
@@ -180,7 +240,7 @@ def test_valid_strict_request_uses_structured_response():
 def test_strict_request_loops_until_hold_when_residual_s1_remains():
     client = _client()
     text = "결론적으로 성과를 냈습니다. 따라서 개선됩니다. 이를 통해 정리합니다. 그러므로 유지합니다."
-    raw_body = json.dumps(_payload(text=text, rewrite_mode="strict"), ensure_ascii=False).encode("utf-8")
+    raw_body = json.dumps(_payload(text=text, rewrite_mode="strict", max_rounds=3), ensure_ascii=False).encode("utf-8")
     headers = _signed_headers(raw_body)
 
     response = client.post("/v1/rewrite", content=raw_body, headers=headers)
@@ -189,6 +249,126 @@ def test_strict_request_loops_until_hold_when_residual_s1_remains():
     data = response.json()
     assert data["usage"]["rounds"] == 3
     assert any("사람 검토" in warning for warning in data["warnings"])
+
+
+def test_strict_request_defaults_to_single_round_when_max_rounds_omitted():
+    client = _client()
+    text = "결론적으로 성과를 냈습니다. 따라서 개선됩니다. 이를 통해 정리합니다. 그러므로 유지합니다."
+    body = _payload(text=text, rewrite_mode="strict")
+    body.pop("max_rounds")
+    raw_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    headers = _signed_headers(raw_body)
+
+    response = client.post("/v1/rewrite", content=raw_body, headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["usage"]["rounds"] == 1
+    assert any("사람 검토" in warning for warning in data["warnings"])
+
+
+def test_prompts_pass_user_selected_rewrite_controls():
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            user_intent="문장을 더 부드럽게 다듬어 주세요.",
+            rewrite_mode="strict",
+            tone="friendly",
+            max_rounds=3,
+            preserve_formatting=True,
+        )
+    )
+
+    payload = json.loads(
+        prompts.fast_user_prompt(
+            request,
+            "report",
+            {"estimatedGenre": "report", "metricsBefore": {}, "preservationTerms": []},
+        )
+    )
+
+    assert payload["settings"] == {
+        "user_intent": "문장을 더 부드럽게 다듬어 주세요.",
+        "rewrite_mode": "strict",
+        "tone": "friendly",
+        "protected_terms": ["2026년"],
+        "max_rounds": 3,
+        "preserve_formatting": True,
+    }
+    assert "우선 반영" in payload["rewrite_guidance"]["user_intent"]
+    assert "친근" in payload["rewrite_guidance"]["tone"]
+    assert "2026년" in payload["rewrite_guidance"]["protected_terms"]
+    assert "최대 3라운드" in payload["rewrite_guidance"]["max_rounds"]
+    assert "줄바꿈" in payload["rewrite_guidance"]["formatting"]
+
+
+async def test_stub_rewrite_uses_preserve_formatting_switch():
+    preserving = RewriteRequestForTest.model_validate(
+        _payload(text="첫 문장.  둘째 문장.", preserve_formatting=True)
+    )
+    normalizing = RewriteRequestForTest.model_validate(
+        _payload(text="첫 문장.  둘째 문장.", preserve_formatting=False)
+    )
+    llm = StubRewriteLLM()
+
+    preserved = await llm.rewrite(preserving, "report")
+    normalized = await llm.rewrite(normalizing, "report")
+
+    assert preserved.revisedText == "첫 문장.  둘째 문장."
+    assert normalized.revisedText == "첫 문장. 둘째 문장."
+
+
+async def test_protected_terms_are_audited_after_rewrite():
+    class DropsProtectedTermLLM:
+        async def rewrite(self, request, genre_hint):
+            raise AssertionError("fast path should call rewrite_fast")
+
+        async def rewrite_fast(self, request, genre_hint, context):
+            return FastRewriteResult(
+                revisedText="정책은 유지됩니다.",
+                changes=[
+                    Change(
+                        original="API v1 정책은 유지됩니다.",
+                        revised="정책은 유지됩니다.",
+                        reason="테스트용 누락입니다.",
+                        type="clarity",
+                        riskLevel="low",
+                    )
+                ],
+                summary=["표현을 정리했습니다."],
+            )
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(text="API v1 정책은 유지됩니다.", protected_terms=["API v1"])
+    )
+
+    response = await RewriteGraphRunner(_settings(), DropsProtectedTermLLM()).run(request)
+
+    assert any("API v1" in warning and "누락" in warning for warning in response.warnings)
+    assert response.changes[0].riskLevel == "high"
+
+
+async def test_internal_genre_hint_is_inferred_from_text():
+    captured = {}
+
+    class CapturingLLM:
+        async def rewrite(self, request, genre_hint):
+            raise AssertionError("fast path should call rewrite_fast")
+
+        async def rewrite_fast(self, request, genre_hint, context):
+            captured["genre_hint"] = genre_hint
+            return FastRewriteResult(
+                revisedText=request.text,
+                changes=[Change(original="", revised="", reason="유지했습니다.", type="clarity", riskLevel="low")],
+                summary=["유지했습니다."],
+            )
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(text="분기별 보고 결과와 분석 내용입니다.")
+    )
+
+    await RewriteGraphRunner(_settings(), CapturingLLM()).run(request)
+
+    assert captured["genre_hint"] == "report"
 
 
 def test_local_quick_rules_cover_fast_source_rule_ids():
@@ -311,10 +491,10 @@ def test_a8_double_passive_golden_case():
 
 async def test_fast_mode_rolls_back_when_change_rate_exceeds_half():
     class OverRewriteLLM:
-        async def rewrite(self, request, document_type):
+        async def rewrite(self, request, genre_hint):
             raise AssertionError("fast path should call rewrite_fast")
 
-        async def rewrite_fast(self, request, document_type, context):
+        async def rewrite_fast(self, request, genre_hint, context):
             return FastRewriteResult(
                 revisedText="완전히 다른 결론과 새로운 주장으로 바뀐 문장입니다.",
                 changes=[
@@ -345,10 +525,10 @@ async def test_strict_graph_calls_detect_rewrite_audit_review_nodes():
     calls = []
 
     class StrictFakeLLM:
-        async def rewrite(self, request, document_type):
+        async def rewrite(self, request, genre_hint):
             raise AssertionError("strict graph should call node-specific methods")
 
-        async def detect(self, request, document_type, context):
+        async def detect(self, request, genre_hint, context):
             calls.append("detect")
             return DetectionResult(
                 estimatedGenre="report",
@@ -360,7 +540,7 @@ async def test_strict_graph_calls_detect_rewrite_audit_review_nodes():
         async def rewrite_strict(
             self,
             request,
-            document_type,
+            genre_hint,
             context,
             detection,
             previous_revised_text,
@@ -386,11 +566,11 @@ async def test_strict_graph_calls_detect_rewrite_audit_review_nodes():
                 outputTokens=4,
             )
 
-        async def audit(self, request, document_type, context, revised_text, changes):
+        async def audit(self, request, genre_hint, context, revised_text, changes):
             calls.append("audit")
             return AuditResult(status="full_pass", reason="보존 검사를 통과했습니다.", inputTokens=5, outputTokens=6)
 
-        async def review(self, request, document_type, context, detection, revised_text, audit_warnings):
+        async def review(self, request, genre_hint, context, detection, revised_text, audit_warnings):
             calls.append("review")
             return NaturalnessReviewResult(decision="accept", reason="잔존 패턴이 없습니다.", inputTokens=7, outputTokens=8)
 
@@ -412,17 +592,17 @@ async def test_strict_conditional_audit_retries_rewrite_round():
     audit_calls = 0
 
     class ConditionalAuditLLM:
-        async def rewrite(self, request, document_type):
+        async def rewrite(self, request, genre_hint):
             raise AssertionError("strict graph should call node-specific methods")
 
-        async def detect(self, request, document_type, context):
+        async def detect(self, request, genre_hint, context):
             calls.append("detect")
             return DetectionResult(estimatedGenre="report", sentenceCount=1)
 
         async def rewrite_strict(
             self,
             request,
-            document_type,
+            genre_hint,
             context,
             detection,
             previous_revised_text,
@@ -446,14 +626,14 @@ async def test_strict_conditional_audit_retries_rewrite_round():
                 summary=["정밀 파이프라인을 통과했습니다."],
             )
 
-        async def audit(self, request, document_type, context, revised_text, changes):
+        async def audit(self, request, genre_hint, context, revised_text, changes):
             nonlocal audit_calls
             audit_calls += 1
             calls.append("audit")
             status = "conditional_pass" if audit_calls == 1 else "full_pass"
             return AuditResult(status=status, reason="조건부 감사 결과입니다.")
 
-        async def review(self, request, document_type, context, detection, revised_text, audit_warnings):
+        async def review(self, request, genre_hint, context, detection, revised_text, audit_warnings):
             calls.append("review")
             return NaturalnessReviewResult(decision="accept", reason="잔존 패턴이 없습니다.")
 
@@ -547,7 +727,7 @@ async def test_openai_rewrite_uses_responses_structured_output(monkeypatch):
     llm = OpenAIRewriteLLM(api_key="test-key", model_name="gpt-5-mini")
     result = await llm.rewrite(
         RewriteRequestForTest.model_validate(_payload()),
-        document_type="report",
+        genre_hint="report",
     )
 
     assert result.revisedText == "개선된 문장입니다."
@@ -627,7 +807,7 @@ async def test_openrouter_fast_rewrite_uses_json_schema_and_usage(monkeypatch):
 
     result = await llm.rewrite_fast(
         RewriteRequestForTest.model_validate(_payload()),
-        document_type="report",
+        genre_hint="report",
         context={"estimatedGenre": "report", "metricsBefore": {}, "preservationTerms": []},
     )
 

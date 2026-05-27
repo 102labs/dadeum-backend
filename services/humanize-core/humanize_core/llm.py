@@ -23,25 +23,24 @@ class LLMResponseError(RuntimeError):
 
 
 class RewriteLLM(Protocol):
-    async def rewrite(self, request: RewriteRequest, document_type: str) -> LLMRewriteResult:
+    async def rewrite(self, request: RewriteRequest, genre_hint: str) -> LLMRewriteResult:
         ...
 
 
 class StubRewriteLLM:
     """Deterministic local LLM replacement for tests and offline development."""
 
-    async def rewrite(self, request: RewriteRequest, document_type: str) -> LLMRewriteResult:
-        revised = squeeze_spaces(request.text).strip()
-        if request.concision in {"tighten", "compact"}:
-            revised = revised.replace(" 매우 ", " ")
-            revised = revised.replace(" 정말 ", " ")
+    async def rewrite(self, request: RewriteRequest, genre_hint: str) -> LLMRewriteResult:
+        revised = request.text.strip() if request.preserve_formatting else squeeze_spaces(request.text).strip()
         if request.tone == "formal" and revised and not revised.endswith(("습니다.", "합니다.", ".", "!", "?")):
             revised = f"{revised}."
+        if request.tone == "friendly":
+            revised = _soften_stub_tone(revised)
 
         return LLMRewriteResult(
             revisedText=revised,
             changes=build_fallback_changes(request.text, revised),
-            summary=["문장 표현을 업무 문서에 맞게 다듬었습니다."],
+            summary=[_stub_summary(request)],
             inputTokens=max(1, len(request.text) // 4),
             outputTokens=max(1, len(revised) // 4),
         )
@@ -54,14 +53,14 @@ class OpenAIRewriteLLM:
         self.api_key = api_key
         self.model_name = model_name
 
-    async def rewrite(self, request: RewriteRequest, document_type: str) -> LLMRewriteResult:
+    async def rewrite(self, request: RewriteRequest, genre_hint: str) -> LLMRewriteResult:
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=self.api_key)
         response = await client.responses.create(
             model=self.model_name,
             instructions=_system_prompt(),
-            input=_user_prompt(request, document_type),
+            input=_user_prompt(request, genre_hint),
             text={"format": _openai_rewrite_text_format()},
         )
         content = _extract_openai_output_text(response)
@@ -80,7 +79,7 @@ class AnthropicRewriteLLM:
         self.api_key = api_key
         self.model_name = model_name
 
-    async def rewrite(self, request: RewriteRequest, document_type: str) -> LLMRewriteResult:
+    async def rewrite(self, request: RewriteRequest, genre_hint: str) -> LLMRewriteResult:
         from anthropic import AsyncAnthropic
 
         client = AsyncAnthropic(api_key=self.api_key)
@@ -89,7 +88,7 @@ class AnthropicRewriteLLM:
             max_tokens=4096,
             temperature=0.2,
             system=_system_prompt(),
-            messages=[{"role": "user", "content": _user_prompt(request, document_type)}],
+            messages=[{"role": "user", "content": _user_prompt(request, genre_hint)}],
         )
         content = "".join(
             block.text for block in response.content if getattr(block, "type", "") == "text"
@@ -140,11 +139,11 @@ class OpenRouterRewriteLLM:
         self.audit_models = _dedupe_models([strict_audit_model_name, primary_model])
         self.review_models = _dedupe_models([strict_review_model_name, primary_model])
 
-    async def rewrite(self, request: RewriteRequest, document_type: str) -> LLMRewriteResult:
+    async def rewrite(self, request: RewriteRequest, genre_hint: str) -> LLMRewriteResult:
         fast_result = await self.rewrite_fast(
             request,
-            document_type,
-            HumanizeContext(estimatedGenre=document_type).model_dump(),
+            genre_hint,
+            HumanizeContext(estimatedGenre=genre_hint).model_dump(),
         )
         return LLMRewriteResult(
             revisedText=fast_result.revisedText,
@@ -157,7 +156,7 @@ class OpenRouterRewriteLLM:
     async def rewrite_fast(
         self,
         request: RewriteRequest,
-        document_type: str,
+        genre_hint: str,
         context: dict[str, Any],
     ) -> FastRewriteResult:
         return await self._chat_structured(
@@ -165,7 +164,7 @@ class OpenRouterRewriteLLM:
             schema_name="fast_rewrite_result",
             result_type=FastRewriteResult,
             system=prompts.fast_system_prompt(),
-            user=prompts.fast_user_prompt(request, document_type, context),
+            user=prompts.fast_user_prompt(request, genre_hint, context),
             max_tokens=5000,
             temperature=0.2,
         )
@@ -173,7 +172,7 @@ class OpenRouterRewriteLLM:
     async def detect(
         self,
         request: RewriteRequest,
-        document_type: str,
+        genre_hint: str,
         context: dict[str, Any],
     ) -> DetectionResult:
         return await self._chat_structured(
@@ -181,7 +180,7 @@ class OpenRouterRewriteLLM:
             schema_name="detection_result",
             result_type=DetectionResult,
             system=prompts.detect_system_prompt(),
-            user=prompts.detect_user_prompt(request, document_type, context),
+            user=prompts.detect_user_prompt(request, genre_hint, context),
             max_tokens=5000,
             temperature=0.1,
         )
@@ -189,7 +188,7 @@ class OpenRouterRewriteLLM:
     async def rewrite_strict(
         self,
         request: RewriteRequest,
-        document_type: str,
+        genre_hint: str,
         context: dict[str, Any],
         detection: DetectionResult,
         previous_revised_text: str | None,
@@ -208,7 +207,7 @@ class OpenRouterRewriteLLM:
             system=prompts.strict_rewrite_system_prompt(),
             user=prompts.strict_rewrite_user_prompt(
                 request,
-                document_type,
+                genre_hint,
                 context,
                 detection,
                 previous_revised_text=previous_revised_text,
@@ -222,7 +221,7 @@ class OpenRouterRewriteLLM:
     async def audit(
         self,
         request: RewriteRequest,
-        document_type: str,
+        genre_hint: str,
         context: dict[str, Any],
         revised_text: str,
         changes: list[dict[str, Any]],
@@ -232,7 +231,7 @@ class OpenRouterRewriteLLM:
             schema_name="audit_result",
             result_type=AuditResult,
             system=prompts.audit_system_prompt(),
-            user=prompts.audit_user_prompt(request, document_type, context, revised_text, changes),
+            user=prompts.audit_user_prompt(request, genre_hint, context, revised_text, changes),
             max_tokens=3000,
             temperature=0.0,
         )
@@ -240,7 +239,7 @@ class OpenRouterRewriteLLM:
     async def review(
         self,
         request: RewriteRequest,
-        document_type: str,
+        genre_hint: str,
         context: dict[str, Any],
         detection: DetectionResult,
         revised_text: str,
@@ -253,7 +252,7 @@ class OpenRouterRewriteLLM:
             system=prompts.review_system_prompt(),
             user=prompts.review_user_prompt(
                 request,
-                document_type,
+                genre_hint,
                 context,
                 detection,
                 revised_text,
@@ -424,21 +423,33 @@ def _system_prompt() -> str:
     )
 
 
-def _user_prompt(request: RewriteRequest, document_type: str) -> str:
+def _user_prompt(request: RewriteRequest, genre_hint: str) -> str:
     payload = {
         "text": request.text,
-        "document_type": document_type,
-        "intensity": request.intensity,
-        "concision": request.concision,
-        "tone": request.tone,
-        "intent": request.intent,
-        "protected_terms": request.protected_terms,
-        "quality_mode": request.quality_mode,
-        "focus_categories": request.focus_categories,
+        "genre_hint": genre_hint,
+        "settings": prompts.request_settings(request),
+        "rewrite_guidance": prompts.rewrite_guidance(request),
         "max_rounds": request.max_rounds,
-        "preserve_formatting": request.preserve_formatting,
     }
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _soften_stub_tone(text: str) -> str:
+    if text.endswith("합니다."):
+        return f"{text[:-4]}해요."
+    return text
+
+
+def _stub_summary(request: RewriteRequest) -> str:
+    mode = "정밀 검토" if request.rewrite_mode == "strict" else "빠른 윤문"
+    tone = {
+        "keep": "기존 톤",
+        "formal": "격식 있는 톤",
+        "friendly": "친근한 톤",
+    }[request.tone]
+    intent = " 사용자 요청 방향을 반영했습니다." if request.user_intent.strip() else ""
+    formatting = "형식을 보존했습니다." if request.preserve_formatting else "필요한 공백을 정리했습니다."
+    return f"{mode} 기준으로 {tone}을 적용했습니다.{intent} {formatting}"
 
 
 def _openai_rewrite_text_format() -> dict[str, Any]:

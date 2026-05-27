@@ -43,7 +43,7 @@ class InputLimitError(ValueError):
 
 class RewriteState(TypedDict, total=False):
     request: RewriteRequest
-    prepared_document_type: str
+    genre_hint: str
     selected_mode: str
     humanize_context: dict
     warnings: list[str]
@@ -103,9 +103,7 @@ class RewriteGraphRunner:
         if text_length > self.settings.max_chars:
             raise InputLimitError(f"text length exceeds HUMANIZE_MAX_CHARS ({self.settings.max_chars})")
 
-        document_type = request.document_type
-        if document_type == "auto":
-            document_type = _infer_document_type(request.text)
+        genre_hint = _infer_genre_hint(request.text)
 
         warnings: list[str] = []
         selected_mode = request.rewrite_mode
@@ -113,7 +111,7 @@ class RewriteGraphRunner:
             selected_mode = "strict"
             warnings.append("입력 길이가 8,000자를 넘어 strict 모드로 자동 전환했습니다.")
 
-        genre = estimate_genre(document_type, request.text)
+        genre = estimate_genre(genre_hint, request.text)
         metrics_before = compute_metrics(request.text, genre)
         preservation_terms = collect_preservation_terms(request.text, request.protected_terms)
         context = HumanizeContext(
@@ -122,12 +120,10 @@ class RewriteGraphRunner:
             protectedTerms=request.protected_terms,
             preservationTerms=preservation_terms,
         ).model_dump()
-        max_rounds = self.settings.strict_max_rounds if selected_mode == "strict" else 1
-        if request.max_rounds > 1:
-            max_rounds = min(request.max_rounds, self.settings.strict_max_rounds)
+        max_rounds = min(request.max_rounds, self.settings.strict_max_rounds) if selected_mode == "strict" else 1
 
         return {
-            "prepared_document_type": document_type,
+            "genre_hint": genre_hint,
             "selected_mode": selected_mode,
             "humanize_context": context,
             "warnings": warnings,
@@ -137,18 +133,17 @@ class RewriteGraphRunner:
 
     async def _fast_rewrite(self, state: RewriteState) -> RewriteState:
         request = state["request"]
-        document_type = state["prepared_document_type"]
+        genre_hint = state["genre_hint"]
         if hasattr(self.llm, "rewrite_fast"):
             fast_result: FastRewriteResult = await self.llm.rewrite_fast(  # type: ignore[attr-defined]
                 request,
-                document_type,
+                genre_hint,
                 state["humanize_context"],
             )
-            residual = local_detect(
-                fast_result.revisedText,
+            residual = _local_detection(
+                request,
                 state["humanize_context"]["estimatedGenre"],
-                request.focus_categories,
-                request.protected_terms,
+                text=fast_result.revisedText,
             )
             self_check = fast_result.selfCheck or [
                 item for item in self_check_items(
@@ -198,7 +193,7 @@ class RewriteGraphRunner:
             )
             return {"llm_result": llm_result, "warnings": _dedupe(warnings), "round": 1}
 
-        llm_result = await self.llm.rewrite(request, document_type)
+        llm_result = await self.llm.rewrite(request, genre_hint)
         return {"llm_result": llm_result}
 
     async def _fast_audit(self, state: RewriteState) -> RewriteState:
@@ -214,16 +209,11 @@ class RewriteGraphRunner:
 
     async def _detect(self, state: RewriteState) -> RewriteState:
         request = state["request"]
-        local = local_detect(
-            request.text,
-            state["humanize_context"]["estimatedGenre"],
-            request.focus_categories,
-            request.protected_terms,
-        )
+        local = _local_detection(request, state["humanize_context"]["estimatedGenre"])
         if hasattr(self.llm, "detect"):
             model_detection: DetectionResult = await self.llm.detect(  # type: ignore[attr-defined]
                 request,
-                state["prepared_document_type"],
+                state["genre_hint"],
                 state["humanize_context"],
             )
             detection = _merge_detections(request.text, local, model_detection)
@@ -233,17 +223,18 @@ class RewriteGraphRunner:
 
     async def _strict_rewrite(self, state: RewriteState) -> RewriteState:
         request = state["request"]
-        document_type = state["prepared_document_type"]
+        genre_hint = state["genre_hint"]
         round_number = state.get("round", 0) + 1
         previous = state.get("llm_result").revisedText if state.get("llm_result") else None
         audit_feedback = state.get("audit_result").warnings if state.get("audit_result") else []
         review_feedback = state.get("review_result").warnings if state.get("review_result") else []
-        use_escalation = round_number >= state.get("max_rounds", self.settings.strict_max_rounds)
+        max_rounds = state.get("max_rounds", self.settings.strict_max_rounds)
+        use_escalation = max_rounds > 1 and round_number >= max_rounds
 
         if hasattr(self.llm, "rewrite_strict"):
             strict_result: StrictRewriteResult = await self.llm.rewrite_strict(  # type: ignore[attr-defined]
                 request,
-                document_type,
+                genre_hint,
                 state["humanize_context"],
                 state["detection"],
                 previous,
@@ -265,7 +256,7 @@ class RewriteGraphRunner:
                 "round": round_number,
             }
 
-        llm_result = await self.llm.rewrite(request, document_type)
+        llm_result = await self.llm.rewrite(request, genre_hint)
         strict_result = StrictRewriteResult(
             revisedText=llm_result.revisedText,
             changes=llm_result.changes,
@@ -285,7 +276,7 @@ class RewriteGraphRunner:
         if hasattr(self.llm, "audit"):
             model_audit: AuditResult = await self.llm.audit(  # type: ignore[attr-defined]
                 request,
-                state["prepared_document_type"],
+                state["genre_hint"],
                 state["humanize_context"],
                 llm_result.revisedText,
                 [change.model_dump() for change in llm_result.changes],
@@ -325,11 +316,10 @@ class RewriteGraphRunner:
     async def _review(self, state: RewriteState) -> RewriteState:
         request = state["request"]
         llm_result = state["llm_result"]
-        residual = local_detect(
-            llm_result.revisedText,
+        residual = _local_detection(
+            request,
             state["humanize_context"]["estimatedGenre"],
-            request.focus_categories,
-            request.protected_terms,
+            text=llm_result.revisedText,
         )
         audit_warnings = state["audit_result"].warnings
         signals = over_polish_signals(request.text, llm_result.revisedText, state["humanize_context"]["estimatedGenre"])
@@ -337,7 +327,7 @@ class RewriteGraphRunner:
         if hasattr(self.llm, "review"):
             model_review: NaturalnessReviewResult = await self.llm.review(  # type: ignore[attr-defined]
                 request,
-                state["prepared_document_type"],
+                state["genre_hint"],
                 state["humanize_context"],
                 state["detection"],
                 llm_result.revisedText,
@@ -390,7 +380,7 @@ class RewriteGraphRunner:
         return {"response": response}
 
 
-def _infer_document_type(text: str) -> str:
+def _infer_genre_hint(text: str) -> str:
     lowered = text.lower()
     if re.search(r"\bdear\b|안녕하세요|감사합니다|regards\b", lowered):
         return "email"
@@ -436,6 +426,15 @@ def _merge_detections(text: str, local: DetectionResult, model_detection: Detect
             "inputTokens": model_detection.inputTokens,
             "outputTokens": model_detection.outputTokens,
         }
+    )
+
+
+def _local_detection(request: RewriteRequest, genre: str, *, text: str | None = None) -> DetectionResult:
+    return local_detect(
+        request.text if text is None else text,
+        genre,
+        None,
+        request.protected_terms,
     )
 
 

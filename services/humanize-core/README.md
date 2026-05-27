@@ -23,6 +23,41 @@ ${timestamp}.${requestId}.${sha256(rawJsonBody)}
 
 The signature is `HMAC-SHA256` using `HUMANIZE_CORE_SIGNING_SECRET`.
 
+## Rewrite Contract
+
+The browser-facing API accepts only the user-selected rewrite controls:
+
+```ts
+type CoreRewriteRequest = {
+  text: string;
+  user_intent?: string;
+  rewrite_mode?: "fast" | "strict";
+  tone?: "keep" | "formal" | "friendly";
+  protected_terms?: string[];
+  max_rounds?: number;
+  preserve_formatting?: boolean;
+};
+```
+
+The Next.js server signs and forwards the Core payload with internal fields:
+
+```json
+{
+  "text": "윤문할 원문",
+  "user_intent": "",
+  "rewrite_mode": "fast",
+  "tone": "keep",
+  "protected_terms": [],
+  "max_rounds": 1,
+  "preserve_formatting": true
+}
+```
+
+Core infers internal genre hints from the text itself. The rewrite logic uses
+`user_intent`, `rewrite_mode`, `tone`, and `preserve_formatting` to choose the
+rewrite strength, tone policy, and formatting policy. Strict mode uses the
+requested `max_rounds` value up to 3 rounds; fast mode uses 1 round.
+
 ## Local Run
 
 ```bash
