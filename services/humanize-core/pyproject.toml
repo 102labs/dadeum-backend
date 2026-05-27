@@ -1,0 +1,38 @@
+[project]
+name = "humanize-core"
+version = "0.1.0"
+description = "Internal rewrite core service for short business writing polish."
+requires-python = ">=3.12"
+dependencies = [
+  "anthropic>=0.75.0",
+  "fastapi>=0.128.0",
+  "langgraph>=1.0.8",
+  "openai>=2.0.0",
+  "pydantic>=2.12.0",
+  "pydantic-settings>=2.12.0",
+  "uvicorn[standard]>=0.38.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28.0",
+  "pytest>=9.0.0",
+  "pytest-asyncio>=1.3.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["humanize_core"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"humanize_core/im_not_ai/resources" = "humanize_core/im_not_ai/resources"
+"humanize_core/im_not_ai/baseline.json" = "humanize_core/im_not_ai/baseline.json"
+"humanize_core/im_not_ai/baseline_v2_diff.json" = "humanize_core/im_not_ai/baseline_v2_diff.json"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
