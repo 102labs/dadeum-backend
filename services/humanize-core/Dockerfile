@@ -7,10 +7,10 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY humanize_core ./humanize_core
+COPY scripts ./scripts
 
 RUN pip install --no-cache-dir .
 
 EXPOSE 8000
 
 CMD ["uvicorn", "humanize_core.api:app", "--host", "0.0.0.0", "--port", "8000"]
-
