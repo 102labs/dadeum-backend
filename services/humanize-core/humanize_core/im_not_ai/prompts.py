@@ -40,6 +40,15 @@ _STRICT_DO_NOT_EDIT_SPANS = [
     "법률·규정 조문과 학술 개념어는 의미가 바뀔 수 있으면 그대로 둔다.",
 ]
 
+_STRICT_STRUCTURED_OUTPUT_CONTRACT = [
+    "revisedText is the single canonical final answer. It must contain the complete rewritten passage from the first original sentence through the final original sentence.",
+    "Never put a partial prefix, continuation stub, excerpt, or dangling clause in revisedText.",
+    "changes[].original and changes[].revised are local diff snippets only. Do not put the full passage in changes[].revised unless the entire passage truly changed as one unit.",
+    "If revisedText and changes[].revised disagree, the response is invalid. Copy the complete final passage into revisedText before returning JSON.",
+    "charCountAfter must match revisedText length, not the length of a change snippet.",
+    "summary may describe what changed, but it must not be the only place that contains the completed rewrite.",
+]
+
 
 def fast_system_prompt() -> str:
     return (
@@ -131,6 +140,7 @@ def strict_rewrite_user_prompt(
         **_prompt_header("strict.rewrite", request),
         "rewrite_strategy": _strict_rewrite_strategy(previous_revised_text, feedback),
         "completion_contract": _completion_contract(request),
+        "structured_output_contract": _STRICT_STRUCTURED_OUTPUT_CONTRACT,
         "advanced_rewrite_objective": _STRICT_REWRITE_OBJECTIVE,
         "preservation_terms": context.get("preservationTerms", []),
         "detection_summary": _compact_detection_summary(detection),

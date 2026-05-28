@@ -408,9 +408,12 @@ def test_strict_rewrite_prompt_targets_advanced_quality_not_finding_only():
     assert "advanced_rewrite_objective" in payload
     assert "rewrite_strategy" in payload
     assert "completion_contract" in payload
+    assert "structured_output_contract" in payload
     assert "initial_draft" in payload["rewrite_strategy"]
     assert payload["completion_contract"]["originalCharCount"] == len(request.text)
     assert "complete rewritten passage" in payload["completion_contract"]["scope"]
+    assert any("revisedText is the single canonical final answer" in item for item in payload["structured_output_contract"])
+    assert any("changes[].original and changes[].revised are local diff snippets only" in item for item in payload["structured_output_contract"])
     assert "rewrite_plan" in payload
     assert "priority_findings" in payload
     assert "do_not_edit_spans" in payload

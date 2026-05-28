@@ -77,6 +77,13 @@ async def _run_probe(args: argparse.Namespace, text: str) -> dict[str, Any]:
         "stage": "strict_rewrite",
         "stoppedBefore": ["strict_audit", "review", "finalize"],
         "provider": settings.model_provider,
+        "modelConfig": {
+            "strictDetectModelName": settings.strict_detect_model_name,
+            "strictRewriteModelName": settings.strict_rewrite_model_name,
+            "strictRewriteResolvedModels": list(getattr(llm, "rewrite_models", [])),
+            "strictAuditModelName": settings.strict_audit_model_name,
+            "strictReviewModelName": settings.strict_review_model_name,
+        },
         "round": state["round"],
         "input": {
             "charCount": len(request.text),
