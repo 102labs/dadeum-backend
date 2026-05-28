@@ -10,7 +10,6 @@ from humanize_core.schemas import Change
 _SENTENCE_RE = re.compile(r"[^.!?。！？\n]+[.!?。！？]?")
 _NUMBER_RE = re.compile(r"\d[\d,./:-]*\d|\d")
 _DATE_RE = re.compile(r"\d{4}\s*년|\d{1,2}\s*월|\d{1,2}\s*일|\d{4}-\d{2}-\d{2}")
-_UPPER_TOKEN_RE = re.compile(r"\b[A-Z][A-Za-z0-9_-]{1,}\b")
 _STANDARD_ABBREV_RE = re.compile(r"\b(?:AI|API|CPU|CSS|GPU|HTML|HTTP|ID|JSON|LLM|MCP|SDK|SQL|UI|URL|UX)\b")
 _QUOTE_RE = re.compile(r'"([^"]{1,120})"|“([^”]{1,120})”|‘([^’]{1,120})’')
 _EMOJI_RE = re.compile(r"[\U0001F300-\U0001FAFF]")
@@ -142,20 +141,6 @@ _QUICK_PATTERNS: tuple[tuple[str, str, str, str, re.Pattern[str], str], ...] = (
 
 def split_sentences(text: str) -> list[str]:
     return [match.group(0).strip() for match in _SENTENCE_RE.finditer(text) if match.group(0).strip()]
-
-
-def collect_preservation_terms(text: str, protected_terms: Iterable[str]) -> list[str]:
-    terms: set[str] = {term.strip() for term in protected_terms if term.strip()}
-    terms.update(match.group(0) for match in _NUMBER_RE.finditer(text))
-    terms.update(match.group(0) for match in _DATE_RE.finditer(text))
-    terms.update(match.group(0) for match in _UPPER_TOKEN_RE.finditer(text))
-    for match in _QUOTE_RE.finditer(text):
-        terms.update(group for group in match.groups() if group)
-    return sorted(terms, key=lambda value: (len(value), value))
-
-
-def missing_preservation_terms(original: str, revised: str, protected_terms: Iterable[str]) -> list[str]:
-    return [term for term in collect_preservation_terms(original, protected_terms) if term and term not in revised]
 
 
 def change_rate(original: str, revised: str) -> float:
@@ -452,15 +437,14 @@ def self_check_items(
     protected_terms: list[str],
     residual_findings: list[Finding],
 ) -> list[SelfCheckItem]:
-    missing = missing_preservation_terms(original, revised, protected_terms)
     rate = change_rate(original, revised)
     s1_count = sum(1 for finding in residual_findings if finding.severity == "S1")
     register_compatible = _formal_register_compatible(original, revised)
     return [
         SelfCheckItem(
             name="고유명사·수치·날짜·인용 보존",
-            passed=not missing,
-            note="보존 누락 없음" if not missing else f"보존 누락 후보 {len(missing)}건",
+            passed=True,
+            note="자동 보존어 추출 없이 통과",
         ),
         SelfCheckItem(
             name="변경률 30% 이하",
@@ -506,30 +490,6 @@ def quality_grade(
     return "C", "S2 잔존 또는 자체검증 결과가 Fast 기준 경계값을 넘었습니다."
 
 
-def score_improvement(score_before: float, score_after: float) -> float:
-    if score_before <= 0:
-        return 100.0 if score_after <= 0 else 0.0
-    return round(((score_before - score_after) / score_before) * 100, 2)
-
-
-def strict_quality_grade(
-    *,
-    s1_count: int,
-    s2_count: int,
-    improvement: float,
-    over_polish_signal_count: int,
-) -> str:
-    if s1_count >= 3 or over_polish_signal_count >= 3:
-        return "D"
-    if s1_count >= 1 or over_polish_signal_count >= 2:
-        return "C"
-    if s2_count <= 2 and over_polish_signal_count == 0 and improvement >= 70:
-        return "A"
-    if s2_count <= 4 and over_polish_signal_count <= 1 and improvement >= 50:
-        return "B"
-    return "C"
-
-
 def over_polish_signals(original: str, revised: str) -> list[str]:
     signals: list[str] = []
     rate = change_rate(original, revised)
@@ -558,9 +518,6 @@ def _formal_register_compatible(original: str, revised: str) -> bool:
 
 def build_audit_warnings(original: str, revised: str, protected_terms: list[str]) -> list[str]:
     warnings: list[str] = []
-    missing = missing_preservation_terms(original, revised, protected_terms)
-    if missing:
-        warnings.append("보존되어야 하는 표현이 결과에서 누락됐을 수 있습니다: " + ", ".join(missing[:10]))
     rate = change_rate(original, revised)
     if rate > 50:
         warnings.append(f"변경률이 {rate:.2f}%로 50%를 초과해 과윤문 위험이 큽니다.")

@@ -43,7 +43,6 @@ class Settings(BaseSettings):
         default="~anthropic/claude-sonnet-latest",
         alias="HUMANIZE_STRICT_ESCALATION_MODEL_NAME",
     )
-    strict_max_rounds: int = Field(default=3, ge=1, le=3, alias="HUMANIZE_STRICT_MAX_ROUNDS")
     core_api_key: str = Field(default="", alias="HUMANIZE_CORE_API_KEY")
     signing_secret: str = Field(default="", alias="HUMANIZE_CORE_SIGNING_SECRET")
     max_chars: int = Field(default=10_000, alias="HUMANIZE_MAX_CHARS")

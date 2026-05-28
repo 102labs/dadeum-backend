@@ -8,13 +8,14 @@ from humanize_core.schemas import Change
 Severity = Literal["S1", "S2", "S3"]
 FindingScope = Literal["span", "document"]
 AuditStatus = Literal["full_pass", "conditional_pass", "fail"]
-FlaggedEditAction = Literal["rollback_required", "rewrite_with_hedge_preserved", "warning"]
-ReviewDecision = Literal[
-    "accept",
-    "accept_with_note",
-    "rewrite_round_2",
-    "rollback_and_rewrite",
-    "hold_and_report",
+FlaggedEditAction = Literal[
+    "rewrite_required",
+    "restore_original",
+    "preserve_exact",
+    "warning",
+    # Backward-compatible values accepted from older model prompts/tests.
+    "rollback_required",
+    "rewrite_with_hedge_preserved",
 ]
 
 
@@ -111,6 +112,8 @@ class FlaggedEdit(BaseModel):
     issue: str
     checklistFailed: list[int] = Field(default_factory=list)
     action: FlaggedEditAction
+    correctionDirection: str = ""
+    severity: Literal["low", "medium", "high"] = "medium"
 
 
 class AuditResult(BaseModel):
@@ -128,28 +131,22 @@ class AuditResult(BaseModel):
     outputTokens: int = 0
 
 
-class NaturalnessReviewResult(BaseModel):
+class StrictReviewResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    decision: ReviewDecision
+    revisedText: str
+    changes: list[Change]
+    summary: list[str]
     warnings: list[str] = Field(default_factory=list)
+    auditCorrectionsApplied: list[str] = Field(default_factory=list)
     residualFindings: list[Finding] = Field(default_factory=list)
-    scoreBefore: float = 0.0
-    scoreAfter: float = 0.0
-    scoreImprovement: float = 0.0
-    s1Residual: int = 0
-    s2Residual: int = 0
-    overPolishSignals: list[str] = Field(default_factory=list)
+    finalAuditStatus: AuditStatus = "full_pass"
+    finalAuditWarnings: list[str] = Field(default_factory=list)
+    finalBlockingIssues: list[str] = Field(default_factory=list)
     qualityLevel: str = ""
-    overPolishFindings: list[str] = Field(default_factory=list)
-    unclassifiedCandidates: list[str] = Field(default_factory=list)
-    targetFindingIds: list[str] = Field(default_factory=list)
-    reason: str
     inputTokens: int = 0
     outputTokens: int = 0
 
 
 class HumanizeContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-    preservationTerms: list[str] = Field(default_factory=list)

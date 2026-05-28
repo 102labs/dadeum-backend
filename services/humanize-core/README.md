@@ -55,8 +55,9 @@ The Next.js server signs and forwards the Core payload with internal fields:
 
 Core infers internal genre hints from the text itself. The rewrite logic uses
 `user_intent`, `rewrite_mode`, `tone`, and `preserve_formatting` to choose the
-rewrite strength, tone policy, and formatting policy. Strict mode uses the
-requested `max_rounds` value up to 3 rounds; fast mode uses 1 round.
+rewrite strength, tone policy, and formatting policy. `protected_terms` and
+`max_rounds` are accepted for request compatibility but are not used by the
+current rewrite pipeline. Strict mode always runs one fixed multi-stage routine.
 
 ## Local Run
 
@@ -88,7 +89,9 @@ HUMANIZE_STRICT_ESCALATION_MODEL_NAME=~anthropic/claude-sonnet-latest
 prepare -> detect -> rewrite -> audit -> review -> finalize
 ```
 
-Strict mode can loop from `review` back to `rewrite` up to `HUMANIZE_STRICT_MAX_ROUNDS` when audit or residual-pattern review requires another pass.
+Strict mode does not loop. The `review` stage applies the first audit feedback,
+checks residual AI-tell patterns, performs one conservative correction pass, and
+the graph re-runs the strict audit before `finalize`.
 
 The OpenAI provider uses the Responses API with strict JSON Schema structured
 output for `revisedText`, `changes`, and `summary`. Usage metrics come from the

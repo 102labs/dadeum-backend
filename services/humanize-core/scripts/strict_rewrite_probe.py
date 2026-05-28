@@ -87,10 +87,10 @@ async def _run_probe(args: argparse.Namespace, text: str) -> dict[str, Any]:
         "round": state["round"],
         "input": {
             "charCount": len(request.text),
-            "maxRounds": request.max_rounds,
+            "ignoredMaxRounds": request.max_rounds,
             "tone": request.tone,
             "preserveFormatting": request.preserve_formatting,
-            "protectedTerms": request.protected_terms,
+            "ignoredProtectedTerms": request.protected_terms,
         },
         "detectionSummary": {
             "sentenceCount": detection.sentenceCount,
@@ -121,9 +121,15 @@ def _parse_args() -> argparse.Namespace:
         "--protected-term",
         action="append",
         default=[],
-        help="Protected term. Repeat this flag for multiple terms.",
+        help="Compatibility input only; strict mode no longer uses protected terms.",
     )
-    parser.add_argument("--max-rounds", type=int, choices=[1, 2, 3], default=1)
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        choices=[1, 2, 3],
+        default=1,
+        help="Compatibility input only; strict mode always runs one routine.",
+    )
     parser.add_argument(
         "--no-preserve-formatting",
         action="store_true",

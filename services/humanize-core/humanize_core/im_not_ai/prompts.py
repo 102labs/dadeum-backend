@@ -1,10 +1,9 @@
 import json
-import math
 import re
 from typing import Any
 
 from humanize_core.im_not_ai.resources import quick_rules, strict_rules
-from humanize_core.im_not_ai.schemas import DetectionResult, Finding
+from humanize_core.im_not_ai.schemas import AuditResult, DetectionResult, Finding
 from humanize_core.schemas import RewriteRequest
 
 
@@ -15,9 +14,8 @@ _STRICT_REWRITE_OBJECTIVE = [
     "priority_findings는 우선순위 힌트다. 수정 범위를 finding span으로 제한하지 말고 같은 문장·문단의 어색한 연결, 반복, 번역투도 함께 정리한다.",
     "원문의 주장, 정보량, 순서, 관점, register, formatting intent는 유지한다.",
     "fast보다 깊게 보되 과장, 새 사실, 장식적 표현, 불필요한 재구성은 하지 않는다.",
-    "직접 인용, 수치, 날짜, 고유명사, 제품명, 모델명, protected_terms는 윤문 대상이 아니라 보존 대상이다.",
+    "직접 인용, 수치, 날짜, 고유명사, 제품명, 모델명은 윤문 대상이 아니라 보존 대상이다.",
     "전체를 다시 쓰기보다 detect/plan에서 고른 문제를 중심으로 어색한 표현, 연결, 리듬, 번역투를 필요한 만큼만 고친다.",
-    "재라운드에서는 이전 초안을 버리고 새로 쓰지 말고 audit/review가 지적한 문장·문단만 패치한 뒤 완성본 전체를 반환한다.",
 ]
 
 _STRICT_REWRITE_RECIPES = {
@@ -54,7 +52,7 @@ def fast_system_prompt() -> str:
     return (
         "You are the backend port of the im-not-ai Korean business rewrite engine. "
         "Perform detection, rewriting, and self-check in one call. "
-        "Preserve facts, numbers, dates, names, quotations, protected terms, and register exactly. "
+        "Preserve facts, numbers, dates, names, quotations, and register exactly. "
         "Use user_intent, tone, rewrite_mode, and preserve_formatting to choose rewrite strength, tone, and formatting. "
         "Only edit AI-tell style, translationese, rhythm, structure, and business clarity. "
         "Do not expose hidden reasoning. Return only JSON matching the schema."
@@ -65,7 +63,6 @@ def fast_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str:
     payload = {
         **_prompt_header("fast", request),
         "im_not_ai_quick_rules": quick_rules(),
-        "preservation_terms": context.get("preservationTerms", []),
         "self_check_required": [
             "고유명사·수치·날짜·인용 100% 보존",
             "변경률 30% 이하, 50% 초과 금지",
@@ -78,7 +75,7 @@ def fast_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str:
             "qualityLevel: A/B/C/D",
             "changeRate: 원문 대비 문자 변경률",
             "rollbackRequired: 변경률 50% 초과 또는 의미 보존 실패 시 true",
-            "settingsApplied: user_intent, tone, protected_terms, preserve_formatting 반영 여부",
+            "settingsApplied: user_intent, tone, preserve_formatting 반영 여부",
         ],
         "text": request.text,
     }
@@ -88,7 +85,7 @@ def fast_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str:
 def detect_system_prompt() -> str:
     return (
         "You are the strict detect/plan step for Korean rewriting. Identify spans and document-level AI-tell patterns, then prioritize what should actually be improved. "
-        "Offsets must be based on the original Python string. Exclude numbers, names, quotations, and protected terms. "
+        "Offsets must be based on the original Python string. Exclude numbers, names, and quotations. "
         "Return only JSON matching the schema."
     )
 
@@ -104,7 +101,6 @@ def detect_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str:
             "S1/S2를 우선하고, S3는 다른 문제와 겹칠 때만 findings에 포함한다.",
             "보존 대상은 finding으로 만들지 않는다.",
         ],
-        "preservation_terms": context.get("preservationTerms", []),
         "score_contract": {
             "severityWeightedScore": "S1=5, S2=2, S3=0.5 합계, 0~100 정규화",
             "aiTellDensity": "탐지 span 총 글자 수 / 전체 글자 수",
@@ -120,8 +116,7 @@ def strict_rewrite_system_prompt() -> str:
         "You are an advanced Korean business writing editor for the im-not-ai strict pipeline. "
         "Produce the best natural rewrite for the whole passage: improve flow, rhythm, transitions, clarity, and readability. "
         "Treat detection findings as priority hints, not as the only editable spans. "
-        "If a previous draft and feedback are provided, patch only the problematic sentences or paragraphs and return the complete revised passage. "
-        "Preserve meaning, protected spans, facts, claims, order, formatting intent, and register. "
+        "Preserve meaning, facts, claims, order, formatting intent, and register. "
         "Use user_intent, tone, rewrite_mode, and preserve_formatting to choose rewrite strength, tone, and formatting. "
         "Do not add new claims, examples, metaphors, facts, or citations. Return only JSON matching the schema."
     )
@@ -131,34 +126,25 @@ def strict_rewrite_user_prompt(
     request: RewriteRequest,
     context: dict[str, Any],
     detection: DetectionResult,
-    previous_revised_text: str | None = None,
-    audit_feedback: list[str] | None = None,
-    review_feedback: list[str] | None = None,
 ) -> str:
-    feedback = [*(audit_feedback or []), *(review_feedback or [])]
     payload = {
         **_prompt_header("strict.rewrite", request),
-        "rewrite_strategy": _strict_rewrite_strategy(previous_revised_text, feedback),
+        "rewrite_strategy": "single_pass_initial_draft: detect 결과를 우선순위 힌트로 삼아 원문 전체를 자연스럽게 윤문하고 완성본 전체를 revisedText로 반환한다.",
         "completion_contract": _completion_contract(request),
         "structured_output_contract": _STRICT_STRUCTURED_OUTPUT_CONTRACT,
         "advanced_rewrite_objective": _STRICT_REWRITE_OBJECTIVE,
-        "preservation_terms": context.get("preservationTerms", []),
         "detection_summary": _compact_detection_summary(detection),
         "rewrite_plan": _strict_rewrite_plan(detection),
         "priority_findings": _priority_findings(detection),
         "targeted_rewrite_recipes": _targeted_rewrite_recipes(detection),
         "do_not_edit_spans": _STRICT_DO_NOT_EDIT_SPANS,
-        "previous_revised_text": previous_revised_text,
-        "audit_feedback": audit_feedback or [],
-        "review_feedback": review_feedback or [],
         "self_check_required": [
             "원문의 모든 문장·문단이 결과에 반영됐는지 확인한다.",
-            "숫자, 날짜, 고유명사, 인용, protected_terms, 핵심 주장과 인과관계를 보존한다.",
+            "숫자, 날짜, 고유명사, 인용, 핵심 주장과 인과관계를 보존한다.",
             "문장 흐름, 리듬, 연결, 명확성이 원문보다 더 자연스러운지 확인한다.",
             "priority_findings의 S1/S2 신호를 가능한 한 해소하되 보존 규칙과 충돌하면 보존을 우선한다.",
             "do_not_edit_spans의 항목은 표현이 어색해 보여도 수정하지 않는다.",
             "새 사실, 예시, 비유, 근거, 과한 마케팅 문구를 추가하지 않는다.",
-            "audit_feedback과 review_feedback이 있으면 전체 재작성 대신 지적된 부분만 패치한다.",
         ],
         "diff_contract": {
             "edits": "의미 있는 변경 단위별로 findingId(optional), before, after, category, reason, action, changeRate를 기록",
@@ -174,7 +160,8 @@ def strict_rewrite_user_prompt(
 def audit_system_prompt() -> str:
     return (
         "You are content-fidelity-auditor. Compare original and rewritten Korean text. "
-        "Audit preservation of facts, numbers, dates, names, protected terms, quotations, and claims. "
+        "Audit omissions, numbers, dates, units, names, quotations, key phrases, claims, causal relations, and meaning drift. "
+        "List every part that needs correction and give a concrete correction direction. "
         "Return only JSON matching the schema."
     )
 
@@ -187,7 +174,6 @@ def audit_user_prompt(
 ) -> str:
     payload = {
         **_prompt_header("strict.audit", request),
-        "preservation_terms": context.get("preservationTerms", []),
         "checklist_13": [
             "고유명사",
             "수치·단위",
@@ -203,7 +189,17 @@ def audit_user_prompt(
             "순서",
             "누락·첨가",
         ],
-        "audit_contract": "flaggedEdits에는 findingId/before/after/issue/checklistFailed/action을 기록하고, action은 rollback_required/rewrite_with_hedge_preserved/warning 중 하나를 사용",
+        "audit_contract": {
+            "purpose": "최종 실패 판정이 아니라 review 단계가 고칠 수 있는 수정 지시 리스트를 만든다.",
+            "flaggedEdits": "before, after, issue, checklistFailed, action, correctionDirection, severity를 기록한다.",
+            "actions": {
+                "rewrite_required": "의미 보존을 위해 문장 일부를 고쳐야 함",
+                "restore_original": "원문 표현을 되살리는 것이 가장 안전함",
+                "preserve_exact": "숫자·고유명사·직접 인용 등을 글자 단위로 복원해야 함",
+                "warning": "최종 반환은 가능하지만 사람이 알아야 할 경미한 주의점",
+            },
+            "status": "full_pass는 수정 필요 없음, conditional_pass는 review에서 고칠 항목 있음, fail은 누락/의미변경/잘림처럼 최종 차단 가능성이 큼",
+        },
         "original_text": request.text,
         "revised_text": revised_text,
         "changes": changes,
@@ -213,9 +209,10 @@ def audit_user_prompt(
 
 def review_system_prompt() -> str:
     return (
-        "You are naturalness-reviewer for Korean business rewriting. "
-        "Judge whether the draft is better Korean business prose, not merely whether detected spans changed. "
-        "Review residual AI-tell patterns, flow, rhythm, readability, over-editing, register drift, and whether another rewrite round is needed. "
+        "You are the final strict review-and-correction step for Korean business rewriting. "
+        "Apply audit correction directions and residual AI-tell review in one conservative final editing pass. "
+        "Then internally re-run the same content-fidelity audit checklist and make one final conservative patch if needed. "
+        "Return the complete final revised passage, local changes, summaries, warnings, and final audit status. "
         "Return only JSON matching the schema."
     )
 
@@ -225,32 +222,32 @@ def review_user_prompt(
     context: dict[str, Any],
     detection: DetectionResult,
     revised_text: str,
-    audit_warnings: list[str],
+    audit_result: AuditResult,
+    residual_detection: DetectionResult,
 ) -> str:
     payload = {
         **_prompt_header("strict.review", request),
-        "review_rubric": [
-            "전체 글의 문장 흐름, 리듬, 연결, 명확성이 원문보다 나아졌는지 본다.",
-            "탐지 findings만 고친 듯한 국소 수정에 그치지 않았는지 확인한다.",
-            "원문 사실, 주장, 순서, 인용, protected_terms가 보존됐는지 본다.",
-            "장식적 표현, 새 사실, 과장, 마케팅 문구가 추가됐는지 본다.",
-            "결과가 중간에 끊겼거나 일부 문장·문단을 누락했으면 accept하지 않는다.",
-            "재라운드가 필요하면 전체 재작성보다 문제 문장·문단 패치가 필요한지 판단한다.",
+        "fixed_review_routine": [
+            "1) strict_audit.flaggedEdits의 수정 지시를 먼저 반영한다.",
+            "2) residual_detection의 잔존 S1/S2 AI 티 패턴 중 의미 보존을 해치지 않는 항목만 보수적으로 고친다.",
+            "3) 원문 대비 누락, 숫자·날짜·단위, 고유명사, 직접 인용, 핵심 구절, 주장, 인과관계, 의미 변화를 다시 점검한다.",
+            "4) 재점검에서 문제가 남으면 해당 부분만 원문에 가깝게 복원하거나 최소 수정한다.",
+            "5) 수정이 안전하지 않은 문장은 원문 표현을 유지한다.",
         ],
-        "preservation_terms": context.get("preservationTerms", []),
         "original_detection": _compact_detection_summary(detection),
         "priority_findings": _priority_findings(detection),
-        "audit_warnings": audit_warnings,
-        "review_contract": {
-            "accept": "보존 문제 없음, 결과 완성, 문장 흐름·리듬·명확성 개선, S1 0, 과윤문 없음",
-            "accept_with_note": "보존 문제 없음, 결과 완성, S1 0, S2 3건 이하, 경미한 아쉬움만 있음",
-            "rewrite_round_2": "보존은 안전하지만 문장 흐름·리듬·명확성 개선 부족, S1 잔존, 또는 S2 4건 이상. 다음 라운드는 이전 초안 패치로 처리",
-            "rollback_and_rewrite": "문체 이탈, 새 정보 추가, 감사 조건부 통과, 누락 등으로 이전 안전 초안 또는 원문 기반 패치 필요",
-            "hold_and_report": "최대 라운드 뒤에도 S1 3건 이상 또는 심각한 과윤문",
-            "quality": "A: S1 0/S2<=2/70%+ 개선, B: S1 0/S2<=4/50%+ 개선, C/D는 원본 기준",
-        },
+        "strict_audit": audit_result.model_dump(),
+        "residual_detection": _compact_detection_summary(residual_detection),
+        "residual_findings": _priority_findings(residual_detection),
+        "review_contract": [
+            "revisedText에는 최종 완성본 전체를 넣는다. 부분 문장, 이어쓰기, 요약은 실패다.",
+            "changes는 최종본에 실제 반영된 로컬 변경만 기록한다.",
+            "auditCorrectionsApplied에는 strict_audit 지시 중 반영한 항목을 요약한다.",
+            "finalAuditStatus/finalAuditWarnings/finalBlockingIssues는 내부 재감사 결과를 기준으로 채운다.",
+            "finalBlockingIssues가 있으면 결과가 차단될 수 있으므로, 가능한 경우 원문에 가깝게 보수 패치한 뒤 반환한다.",
+        ],
         "original_text": request.text,
-        "revised_text": revised_text,
+        "draft_revised_text": revised_text,
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -268,8 +265,6 @@ def request_settings(request: RewriteRequest) -> dict[str, Any]:
         "user_intent": request.user_intent,
         "rewrite_mode": request.rewrite_mode,
         "tone": request.tone,
-        "protected_terms": request.protected_terms,
-        "max_rounds": request.max_rounds,
         "preserve_formatting": request.preserve_formatting,
     }
 
@@ -279,13 +274,11 @@ def rewrite_guidance(request: RewriteRequest) -> dict[str, Any]:
         "user_intent": _user_intent_guidance(request.user_intent),
         "rewrite_mode": _rewrite_mode_guidance(request.rewrite_mode),
         "tone": _tone_guidance(request.tone),
-        "protected_terms": _protected_terms_guidance(request.protected_terms),
-        "max_rounds": _max_rounds_guidance(request.rewrite_mode, request.max_rounds),
         "formatting": _formatting_guidance(request.preserve_formatting),
         "hard_constraints": [
             "원문에 없는 사실, 예시, 수치, 인용, 근거를 추가하지 않는다.",
-            "고유명사, 날짜, 숫자, 단위, 직접 인용, protected_terms는 보존한다.",
-            "user_intent가 사실 보존이나 protected_terms와 충돌하면 보존 규칙을 우선한다.",
+            "고유명사, 날짜, 숫자, 단위, 직접 인용은 보존한다.",
+            "user_intent가 사실 보존과 충돌하면 보존 규칙을 우선한다.",
         ],
     }
 
@@ -301,7 +294,7 @@ def _rewrite_mode_guidance(rewrite_mode: str) -> str:
     if rewrite_mode == "strict":
         return (
             "고도화 윤문 모드다. fast보다 더 깊게 전체 글의 문장 흐름, 리듬, 연결, 명확성, AI 티 패턴, "
-            "어색한 번역투를 검토하고 필요하면 최대 라운드 안에서 이전 초안을 부분 패치한다. 변경률은 품질 목표가 아니라 "
+            "어색한 번역투를 검토하고 감사 기반 보수 수정을 한 번 포함한 고정 다단계 루틴으로 처리한다. 변경률은 품질 목표가 아니라 "
             "보존 위험 신호로만 모니터링하며, 단독 초과만으로 실패 처리하지 않는다."
         )
     return (
@@ -316,18 +309,6 @@ def _tone_guidance(tone: str) -> str:
     if tone == "friendly":
         return "친근하지만 업무 맥락을 해치지 않는 문체로 조절한다. 지나친 구어체, 감탄, 과장 표현은 피한다."
     return "기존 톤과 격식을 유지한다. 톤을 새로 만들기보다 어색한 부분만 자연스럽게 정리한다."
-
-
-def _protected_terms_guidance(protected_terms: list[str]) -> str:
-    if not protected_terms:
-        return "사용자가 지정한 보호 용어는 없지만 숫자, 날짜, 고유명사, 직접 인용은 계속 보존한다."
-    return "다음 보호 용어는 철자, 띄어쓰기, 대소문자를 그대로 유지한다: " + ", ".join(protected_terms)
-
-
-def _max_rounds_guidance(rewrite_mode: str, max_rounds: int) -> str:
-    if rewrite_mode == "strict":
-        return f"정밀 검토는 최대 {max_rounds}라운드까지 수행한다. 2라운드부터는 전체 재작성보다 감사/리뷰 피드백이 지적한 부분 패치를 우선한다."
-    return "빠른 윤문은 단일 라운드로 끝낸다. max_rounds 값이 있어도 fast 모드에서는 재윤문 루프를 사용하지 않는다."
 
 
 def _formatting_guidance(preserve_formatting: bool) -> str:
@@ -385,24 +366,6 @@ def _targeted_rewrite_recipes(detection: DetectionResult, limit: int = 8) -> lis
     ]
 
 
-def _strict_rewrite_strategy(previous_revised_text: str | None, feedback: list[str] | None = None) -> str:
-    if _feedback_reports_incomplete(feedback or []):
-        return (
-            "recover_complete_passage_from_original: 직전 strict 초안은 잘렸거나 일부 문장·문단을 누락해 폐기됐다. "
-            "previous_revised_text가 있더라도 이어 쓰지 말고 original text 전체를 다시 읽어 완성본 전체를 revisedText로 반환한다. "
-            "요약, 발췌, 앞부분만 반환, 중간 생략은 실패다. 안전하게 고칠 수 없는 문장은 원문에 가깝게 둔다."
-        )
-    if previous_revised_text:
-        return (
-            "patch_previous_draft: previous_revised_text를 기준으로 audit_feedback/review_feedback이 지적한 "
-            "문장·문단만 고친다. 안정적인 문장은 유지하고 완성본 전체를 revisedText로 반환한다."
-        )
-    return (
-        "initial_draft: 원문을 기준으로 rewrite_plan의 우선순위를 반영해 자연스럽게 윤문한다. "
-        "전체 재구성보다 필요한 문장 품질 개선을 우선한다."
-    )
-
-
 def _completion_contract(request: RewriteRequest) -> dict[str, Any]:
     original = request.text.strip()
     sentences = _prompt_sentences(original)
@@ -413,9 +376,9 @@ def _completion_contract(request: RewriteRequest) -> dict[str, Any]:
     return {
         "scope": "revisedText must contain the complete rewritten passage, never an excerpt, continuation, or summary.",
         "originalCharCount": char_count,
-        "minimumSafeCharCount": math.floor(char_count * min_char_ratio),
+        "minimumSafeCharCount": int(char_count * min_char_ratio),
         "originalSentenceCount": sentence_count,
-        "minimumSafeSentenceCount": max(1, math.floor(sentence_count * 0.60)) if sentence_count else 0,
+        "minimumSafeSentenceCount": max(1, int(sentence_count * 0.60)) if sentence_count else 0,
         "originalParagraphCount": len(paragraphs),
         "paragraphPolicy": (
             "preserve paragraph count and order unless preserve_formatting is false"
@@ -432,17 +395,6 @@ def _prompt_sentences(text: str) -> list[str]:
         for match in re.finditer(r"[^.!?。！？\n]+[.!?。！？]?", text)
         if match.group(0).strip()
     ]
-
-
-def _feedback_reports_incomplete(feedback: list[str]) -> bool:
-    return any(
-        re.search(
-            r"truncat|incomplete|cut(?:s)?\s*off|mid-sentence|잘렸|잘림|중간|불완전|누락|완료되지",
-            item,
-            re.IGNORECASE,
-        )
-        for item in feedback
-    )
 
 
 def _strict_rewrite_plan(detection: DetectionResult, limit: int = 6) -> list[str]:

@@ -9,7 +9,7 @@ from humanize_core.im_not_ai.schemas import (
     DetectionResult,
     FastRewriteResult,
     HumanizeContext,
-    NaturalnessReviewResult,
+    StrictReviewResult,
     StrictRewriteResult,
 )
 from humanize_core.schemas import LLMRewriteResult, RewriteRequest
@@ -106,7 +106,7 @@ TStructuredResult = TypeVar(
     DetectionResult,
     StrictRewriteResult,
     AuditResult,
-    NaturalnessReviewResult,
+    StrictReviewResult,
 )
 
 
@@ -186,17 +186,9 @@ class OpenRouterRewriteLLM:
         request: RewriteRequest,
         context: dict[str, Any],
         detection: DetectionResult,
-        previous_revised_text: str | None,
-        audit_feedback: list[str],
-        review_feedback: list[str],
-        *,
-        use_escalation: bool = False,
     ) -> StrictRewriteResult:
-        models = self.rewrite_models
-        if use_escalation:
-            models = _dedupe_models([self.rewrite_models[-1], *self.rewrite_models])
         return await self._chat_structured(
-            models=models,
+            models=self.rewrite_models,
             schema_name="strict_rewrite_result",
             result_type=StrictRewriteResult,
             system=prompts.strict_rewrite_system_prompt(),
@@ -204,9 +196,6 @@ class OpenRouterRewriteLLM:
                 request,
                 context,
                 detection,
-                previous_revised_text=previous_revised_text,
-                audit_feedback=audit_feedback,
-                review_feedback=review_feedback,
             ),
             max_tokens=6000,
         )
@@ -233,21 +222,23 @@ class OpenRouterRewriteLLM:
         context: dict[str, Any],
         detection: DetectionResult,
         revised_text: str,
-        audit_warnings: list[str],
-    ) -> NaturalnessReviewResult:
+        audit_result: AuditResult,
+        residual_detection: DetectionResult,
+    ) -> StrictReviewResult:
         return await self._chat_structured(
             models=self.review_models,
-            schema_name="naturalness_review_result",
-            result_type=NaturalnessReviewResult,
+            schema_name="strict_review_result",
+            result_type=StrictReviewResult,
             system=prompts.review_system_prompt(),
             user=prompts.review_user_prompt(
                 request,
                 context,
                 detection,
                 revised_text,
-                audit_warnings,
+                audit_result,
+                residual_detection,
             ),
-            max_tokens=3000,
+            max_tokens=6000,
         )
 
     async def _chat_structured(
@@ -465,7 +456,7 @@ def _system_prompt() -> str:
     return (
         "You are a Korean business writing rewrite engine. "
         "Do not store or reveal hidden reasoning. "
-        "Preserve facts, numbers, dates, names, and protected terms. "
+        "Preserve facts, numbers, dates, names, and quotations. "
         "Return a structured response with revisedText, changes, and summary. "
         "Each change must contain original, revised, reason, type, and riskLevel."
     )
@@ -476,7 +467,6 @@ def _user_prompt(request: RewriteRequest) -> str:
         "text": request.text,
         "settings": prompts.request_settings(request),
         "rewrite_guidance": prompts.rewrite_guidance(request),
-        "max_rounds": request.max_rounds,
     }
     return json.dumps(payload, ensure_ascii=False)
 
