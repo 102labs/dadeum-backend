@@ -1136,6 +1136,74 @@ async def test_strict_hold_and_report_blocks_current_draft_without_audit_rollbac
     assert any("사람 검토" in warning for warning in response.warnings)
 
 
+async def test_strict_rewrite_repairs_incomplete_revised_text_from_complete_change_candidate():
+    audited_texts = []
+    text = (
+        "첫 번째는 소스 정리 기능입니다. 에이전트가 제가 저장해둔 모든 소스를 살펴보고, "
+        "관련 있는 자료끼리 묶어서 폴더를 만들고 자동으로 정리하도록 하는 기능입니다. "
+        "두 번째는 소스 검색 기능입니다. 더 이상 제가 직접 피드를 스크롤하면서 자료를 찾는 대신, "
+        "에이전트에게 “소셜미디어 성장에 가장 도움이 되는 자료를 찾아서 새로운 에이전트 스킬을 만드는 데 사용해줘”라고 "
+        "요청할 수 있게 만드는 것입니다. 그러면 에이전트는 현재 작업에 가장 관련성이 높은 자료들을 골라내고, "
+        "유용도에 따라 순위를 매긴 뒤 작은 묶음으로 반환해줍니다."
+    )
+    complete_revised = (
+        "첫 번째는 소스 정리 기능입니다. 에이전트가 저장된 모든 소스를 분석해 관련 자료를 묶고 "
+        "폴더를 자동으로 구성하는 기능입니다. 두 번째는 소스 검색 기능입니다. 더 이상 피드를 직접 "
+        "스크롤하며 자료를 찾는 대신, 에이전트에게 “소셜미디어 성장에 가장 도움이 되는 자료를 찾아서 "
+        "새로운 에이전트 스킬을 만드는 데 사용해줘”라고 요청하면 됩니다. 그러면 에이전트는 해당 작업에 "
+        "맞는 자료를 추려 유용도 순으로 정렬한 뒤 작은 묶음으로 돌려줍니다."
+    )
+
+    class InconsistentStrictLLM:
+        async def rewrite(self, request):
+            raise AssertionError("strict graph should call node-specific methods")
+
+        async def detect(self, request, context):
+            return DetectionResult(sentenceCount=4)
+
+        async def rewrite_strict(
+            self,
+            request,
+            context,
+            detection,
+            previous_revised_text,
+            audit_feedback,
+            review_feedback,
+            *,
+            use_escalation=False,
+        ):
+            return StrictRewriteResult(
+                revisedText="첫 번째는 소스 정리 기능입니다. 에이전트에게 ",
+                changes=[
+                    Change(
+                        original=request.text,
+                        revised=complete_revised,
+                        reason="전체 윤문입니다.",
+                        type="clarity",
+                        riskLevel="low",
+                    )
+                ],
+                summary=["revisedText 필드만 불완전한 structured output입니다."],
+            )
+
+        async def audit(self, request, context, revised_text, changes):
+            audited_texts.append(revised_text)
+            return AuditResult(status="full_pass", reason="보존 검사를 통과했습니다.")
+
+        async def review(self, request, context, detection, revised_text, audit_warnings):
+            return NaturalnessReviewResult(decision="accept", reason="리뷰를 통과했습니다.")
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(text=text, rewrite_mode="strict", max_rounds=1, protected_terms=[])
+    )
+    response = await RewriteGraphRunner(_settings(), InconsistentStrictLLM()).run(request)
+
+    assert audited_texts == [complete_revised]
+    assert response.revisedText == complete_revised
+    assert any("revisedText가 불완전" in item for item in response.summary)
+    assert not any("결과 노출을 차단" in warning for warning in response.warnings)
+
+
 async def test_strict_falls_back_to_last_display_safe_round_when_final_round_is_truncated():
     previous_values = []
     rewrite_calls = 0
