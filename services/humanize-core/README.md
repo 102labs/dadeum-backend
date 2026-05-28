@@ -75,11 +75,11 @@ HUMANIZE_MODEL_PROVIDER=openrouter
 OPENROUTER_API_KEY=...
 HUMANIZE_FAST_MODEL_NAME=openai/gpt-5-mini
 HUMANIZE_FAST_FALLBACK_MODEL_NAME=~anthropic/claude-haiku-latest
-HUMANIZE_STRICT_DETECT_MODEL_NAME=openai/gpt-5-mini
+HUMANIZE_STRICT_DETECT_MODEL_NAME=openai/gpt-5.4-mini
 HUMANIZE_STRICT_REWRITE_MODEL_NAME=~anthropic/claude-sonnet-latest
-HUMANIZE_STRICT_AUDIT_MODEL_NAME=openai/gpt-5
-HUMANIZE_STRICT_REVIEW_MODEL_NAME=~anthropic/claude-haiku-latest
-HUMANIZE_STRICT_ESCALATION_MODEL_NAME=~anthropic/claude-opus-latest
+HUMANIZE_STRICT_AUDIT_MODEL_NAME=~anthropic/claude-haiku-latest
+HUMANIZE_STRICT_REVIEW_MODEL_NAME=openai/gpt-5.4-mini
+HUMANIZE_STRICT_ESCALATION_MODEL_NAME=~anthropic/claude-sonnet-latest
 ```
 
 `rewrite_mode` defaults to `fast`. Fast mode ports the `docs/im-not-ai` monolith path by combining `quick-rules.md`, `metrics_v2.py`, and a single structured rewrite call. `strict` mode runs a LangGraph path:

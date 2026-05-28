@@ -24,7 +24,7 @@ class Settings(BaseSettings):
         alias="HUMANIZE_FAST_FALLBACK_MODEL_NAME",
     )
     strict_detect_model_name: str = Field(
-        default="openai/gpt-5-mini",
+        default="openai/gpt-5.4-mini",
         alias="HUMANIZE_STRICT_DETECT_MODEL_NAME",
     )
     strict_rewrite_model_name: str = Field(
@@ -32,15 +32,15 @@ class Settings(BaseSettings):
         alias="HUMANIZE_STRICT_REWRITE_MODEL_NAME",
     )
     strict_audit_model_name: str = Field(
-        default="openai/gpt-5",
+        default="~anthropic/claude-haiku-latest",
         alias="HUMANIZE_STRICT_AUDIT_MODEL_NAME",
     )
     strict_review_model_name: str = Field(
-        default="~anthropic/claude-haiku-latest",
+        default="openai/gpt-5.4-mini",
         alias="HUMANIZE_STRICT_REVIEW_MODEL_NAME",
     )
     strict_escalation_model_name: str = Field(
-        default="~anthropic/claude-opus-latest",
+        default="~anthropic/claude-sonnet-latest",
         alias="HUMANIZE_STRICT_ESCALATION_MODEL_NAME",
     )
     strict_max_rounds: int = Field(default=3, ge=1, le=3, alias="HUMANIZE_STRICT_MAX_ROUNDS")
