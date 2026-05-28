@@ -707,6 +707,8 @@ def _strict_candidate_is_display_safe(
         return False
     if audit_result.status == "fail" or _strict_audit_requires_rollback(audit_result):
         return False
+    if review_result.decision in {"rollback_and_rewrite", "hold_and_report"}:
+        return False
     return True
 
 
@@ -727,12 +729,15 @@ def _apply_strict_terminal_safety(
     )
     all_warnings = _dedupe([*warnings, *completion_warnings])
     terminal_hold = review_result is not None and review_result.decision == "hold_and_report"
-    should_block = bool(completion_warnings) or (
-        terminal_hold and _strict_audit_requires_rollback(audit_result)
+    should_block = (
+        bool(completion_warnings)
+        or terminal_hold
+        or _strict_audit_requires_rollback(audit_result)
     )
     if not should_block:
         return llm_result, all_warnings
 
+    fallback_warnings = _strict_fallback_warnings(state, all_warnings, terminal_hold)
     safe_result = state.get("display_safe_llm_result")
     if safe_result is not None:
         fallback = safe_result.model_copy(
@@ -743,8 +748,8 @@ def _apply_strict_terminal_safety(
                 ]
             }
         )
-        all_warnings.append("Strict 최종 초안이 완성도/보존 안전 기준을 통과하지 못해 마지막 정상 라운드 결과를 반환했습니다.")
-        return fallback, _dedupe(all_warnings)
+        fallback_warnings.append("Strict 최종 초안이 안전 기준을 통과하지 못해 마지막 정상 라운드 결과를 반환했습니다.")
+        return fallback, _dedupe(fallback_warnings)
 
     request = state["request"]
     fallback = LLMRewriteResult(
@@ -760,8 +765,32 @@ def _apply_strict_terminal_safety(
         ],
         summary=["Strict 최종 초안이 안전 기준을 통과하지 못해 원문을 반환했습니다."],
     )
-    all_warnings.append("Strict 최종 초안이 완성도/보존 안전 기준을 통과하지 못해 결과 노출을 차단하고 원문을 반환했습니다.")
-    return fallback, _dedupe(all_warnings)
+    fallback_warnings.append("Strict가 안전한 윤문 결과를 만들지 못해 결과 노출을 차단하고 원문을 반환했습니다.")
+    return fallback, _dedupe(fallback_warnings)
+
+
+def _strict_fallback_warnings(
+    state: RewriteState,
+    discarded_warnings: list[str],
+    terminal_hold: bool,
+) -> list[str]:
+    warnings = list(state.get("warnings", []))
+    if terminal_hold:
+        warnings.append("Strict 검증이 최대 라운드 안에 완료되지 않아 사람 검토가 필요합니다.")
+    if any(
+        "보존되어야" in warning
+        or "protected" in warning.lower()
+        or "preservation" in warning.lower()
+        for warning in discarded_warnings
+    ):
+        warnings.append("폐기된 strict 초안에서 보존 누락 신호가 감지됐습니다.")
+    if any(_is_strict_completion_warning(warning) for warning in discarded_warnings):
+        warnings.append("폐기된 strict 초안에서 출력 잘림 또는 문장·문단 누락 신호가 감지됐습니다.")
+    if any("과윤문 신호" in warning for warning in discarded_warnings):
+        warnings.append("폐기된 strict 초안에서 과윤문 신호가 감지됐습니다.")
+    if any("잔존 S1" in warning for warning in discarded_warnings):
+        warnings.append("폐기된 strict 초안에 잔존 S1 AI 티 패턴이 있었습니다.")
+    return _dedupe(warnings)
 
 
 def _strict_audit_requires_rollback(audit_result: AuditResult) -> bool:

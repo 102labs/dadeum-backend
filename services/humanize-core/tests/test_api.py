@@ -407,7 +407,10 @@ def test_strict_rewrite_prompt_targets_advanced_quality_not_finding_only():
     assert "findings" not in payload
     assert "advanced_rewrite_objective" in payload
     assert "rewrite_strategy" in payload
+    assert "completion_contract" in payload
     assert "initial_draft" in payload["rewrite_strategy"]
+    assert payload["completion_contract"]["originalCharCount"] == len(request.text)
+    assert "complete rewritten passage" in payload["completion_contract"]["scope"]
     assert "rewrite_plan" in payload
     assert "priority_findings" in payload
     assert "do_not_edit_spans" in payload
@@ -446,6 +449,32 @@ def test_strict_rewrite_prompt_patches_previous_draft_on_later_rounds():
     assert "patch_previous_draft" in payload["rewrite_strategy"]
     assert payload["previous_revised_text"] == "이 기능은 데이터로 성장을 지원합니다."
     assert "전체 재작성 대신" in json.dumps(payload["self_check_required"], ensure_ascii=False)
+
+
+def test_strict_rewrite_prompt_recovers_from_incomplete_feedback_using_original():
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            text="이 기능은 데이터를 통해 성장을 지원합니다. 전략적 실행성과 구조화가 필요합니다.",
+            rewrite_mode="strict",
+            max_rounds=2,
+        )
+    )
+    detection = _strict_prompt_detection()
+
+    payload = json.loads(
+        prompts.strict_rewrite_user_prompt(
+            request,
+            {"preservationTerms": ["데이터"]},
+            detection,
+            previous_revised_text="이 기능은 데이터로 성장을",
+            audit_feedback=["Strict 결과가 문장 중간에서 끝난 것으로 보여 완성도 검증을 통과하지 못했습니다."],
+            review_feedback=[],
+        )
+    )
+
+    assert "recover_complete_passage_from_original" in payload["rewrite_strategy"]
+    assert "이어 쓰지 말고" in payload["rewrite_strategy"]
+    assert payload["previous_revised_text"] == "이 기능은 데이터로 성장을"
 
 
 def test_strict_detect_prompt_uses_compact_stric_rules_only_in_detect():
@@ -995,7 +1024,116 @@ async def test_strict_blocks_truncated_final_draft_and_does_not_seed_retry_with_
     assert response.revisedText == request.text
     assert response.usage.rounds == 2
     assert any("결과 노출을 차단" in warning for warning in response.warnings)
-    assert any("지나치게 짧" in warning for warning in response.warnings)
+    assert any("폐기된 strict 초안에서 출력 잘림" in warning for warning in response.warnings)
+
+
+async def test_strict_fallback_warnings_do_not_describe_returned_original_as_missing_terms():
+    text = (
+        '첫 번째는 소스 정리 기능입니다. "소셜미디어 성장에 가장 도움이 되는 자료를 찾아서 '
+        '새로운 에이전트 스킬을 만드는 데 사용해줘"라는 요청을 보존해야 합니다. '
+        "이 기능은 저장된 자료를 바탕으로 작업 컨텍스트를 만듭니다."
+    )
+
+    class MissingQuoteStrictLLM:
+        async def rewrite(self, request):
+            raise AssertionError("strict graph should call node-specific methods")
+
+        async def detect(self, request, context):
+            return DetectionResult(sentenceCount=3)
+
+        async def rewrite_strict(
+            self,
+            request,
+            context,
+            detection,
+            previous_revised_text,
+            audit_feedback,
+            review_feedback,
+            *,
+            use_escalation=False,
+        ):
+            return StrictRewriteResult(
+                revisedText="첫 번째는 소스 정리 기능입니다.",
+                changes=[
+                    Change(
+                        original="source",
+                        revised="truncated",
+                        reason="테스트용 보존 누락 초안입니다.",
+                        type="clarity",
+                        riskLevel="low",
+                    )
+                ],
+                summary=["보존 문구가 빠진 초안입니다."],
+            )
+
+        async def audit(self, request, context, revised_text, changes):
+            return AuditResult(status="full_pass", reason="모델 감사는 통과했습니다.")
+
+        async def review(self, request, context, detection, revised_text, audit_warnings):
+            return NaturalnessReviewResult(decision="accept", reason="모델 리뷰는 통과했습니다.")
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(text=text, rewrite_mode="strict", max_rounds=1, protected_terms=[])
+    )
+    response = await RewriteGraphRunner(_settings(), MissingQuoteStrictLLM()).run(request)
+
+    assert response.revisedText == request.text
+    assert not any("보존되어야 하는 표현이 결과" in warning for warning in response.warnings)
+    assert any("폐기된 strict 초안에서 보존 누락" in warning for warning in response.warnings)
+    assert any("원문을 반환" in warning for warning in response.warnings)
+
+
+async def test_strict_hold_and_report_blocks_current_draft_without_audit_rollback():
+    class HoldReviewLLM:
+        async def rewrite(self, request):
+            raise AssertionError("strict graph should call node-specific methods")
+
+        async def detect(self, request, context):
+            return DetectionResult(sentenceCount=1)
+
+        async def rewrite_strict(
+            self,
+            request,
+            context,
+            detection,
+            previous_revised_text,
+            audit_feedback,
+            review_feedback,
+            *,
+            use_escalation=False,
+        ):
+            return StrictRewriteResult(
+                revisedText="문장을 더 세련되고 자연스럽게 정리합니다.",
+                changes=[
+                    Change(
+                        original=request.text,
+                        revised="문장을 더 세련되고 자연스럽게 정리합니다.",
+                        reason="테스트용 hold 초안입니다.",
+                        type="clarity",
+                        riskLevel="low",
+                    )
+                ],
+                summary=["hold 대상 초안입니다."],
+            )
+
+        async def audit(self, request, context, revised_text, changes):
+            return AuditResult(status="full_pass", reason="감사는 통과했습니다.")
+
+        async def review(self, request, context, detection, revised_text, audit_warnings):
+            return NaturalnessReviewResult(decision="hold_and_report", reason="사람 검토가 필요합니다.")
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            text="문장을 조금 더 자연스럽게 정리합니다.",
+            rewrite_mode="strict",
+            max_rounds=1,
+            protected_terms=[],
+        )
+    )
+    response = await RewriteGraphRunner(_settings(), HoldReviewLLM()).run(request)
+
+    assert response.revisedText == request.text
+    assert any("사람 검토" in warning for warning in response.warnings)
 
 
 async def test_strict_falls_back_to_last_display_safe_round_when_final_round_is_truncated():

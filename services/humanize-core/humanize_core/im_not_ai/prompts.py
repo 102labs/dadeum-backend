@@ -1,4 +1,6 @@
 import json
+import math
+import re
 from typing import Any
 
 from humanize_core.im_not_ai.resources import quick_rules, strict_rules
@@ -124,9 +126,11 @@ def strict_rewrite_user_prompt(
     audit_feedback: list[str] | None = None,
     review_feedback: list[str] | None = None,
 ) -> str:
+    feedback = [*(audit_feedback or []), *(review_feedback or [])]
     payload = {
         **_prompt_header("strict.rewrite", request),
-        "rewrite_strategy": _strict_rewrite_strategy(previous_revised_text),
+        "rewrite_strategy": _strict_rewrite_strategy(previous_revised_text, feedback),
+        "completion_contract": _completion_contract(request),
         "advanced_rewrite_objective": _STRICT_REWRITE_OBJECTIVE,
         "preservation_terms": context.get("preservationTerms", []),
         "detection_summary": _compact_detection_summary(detection),
@@ -371,7 +375,13 @@ def _targeted_rewrite_recipes(detection: DetectionResult, limit: int = 8) -> lis
     ]
 
 
-def _strict_rewrite_strategy(previous_revised_text: str | None) -> str:
+def _strict_rewrite_strategy(previous_revised_text: str | None, feedback: list[str] | None = None) -> str:
+    if _feedback_reports_incomplete(feedback or []):
+        return (
+            "recover_complete_passage_from_original: 직전 strict 초안은 잘렸거나 일부 문장·문단을 누락해 폐기됐다. "
+            "previous_revised_text가 있더라도 이어 쓰지 말고 original text 전체를 다시 읽어 완성본 전체를 revisedText로 반환한다. "
+            "요약, 발췌, 앞부분만 반환, 중간 생략은 실패다. 안전하게 고칠 수 없는 문장은 원문에 가깝게 둔다."
+        )
     if previous_revised_text:
         return (
             "patch_previous_draft: previous_revised_text를 기준으로 audit_feedback/review_feedback이 지적한 "
@@ -380,6 +390,48 @@ def _strict_rewrite_strategy(previous_revised_text: str | None) -> str:
     return (
         "initial_draft: 원문을 기준으로 rewrite_plan의 우선순위를 반영해 자연스럽게 윤문한다. "
         "전체 재구성보다 필요한 문장 품질 개선을 우선한다."
+    )
+
+
+def _completion_contract(request: RewriteRequest) -> dict[str, Any]:
+    original = request.text.strip()
+    sentences = _prompt_sentences(original)
+    paragraphs = [paragraph for paragraph in re.split(r"\n\s*\n", original) if paragraph.strip()]
+    char_count = len(original)
+    sentence_count = len(sentences)
+    min_char_ratio = 0.75 if char_count >= 200 else 0.70
+    return {
+        "scope": "revisedText must contain the complete rewritten passage, never an excerpt, continuation, or summary.",
+        "originalCharCount": char_count,
+        "minimumSafeCharCount": math.floor(char_count * min_char_ratio),
+        "originalSentenceCount": sentence_count,
+        "minimumSafeSentenceCount": max(1, math.floor(sentence_count * 0.60)) if sentence_count else 0,
+        "originalParagraphCount": len(paragraphs),
+        "paragraphPolicy": (
+            "preserve paragraph count and order unless preserve_formatting is false"
+            if request.preserve_formatting
+            else "paragraphs may be adjusted only when all original content remains covered"
+        ),
+        "failurePolicy": "If a sentence cannot be safely improved, keep it close to the original. Do not shorten the passage to satisfy style rules.",
+    }
+
+
+def _prompt_sentences(text: str) -> list[str]:
+    return [
+        match.group(0).strip()
+        for match in re.finditer(r"[^.!?。！？\n]+[.!?。！？]?", text)
+        if match.group(0).strip()
+    ]
+
+
+def _feedback_reports_incomplete(feedback: list[str]) -> bool:
+    return any(
+        re.search(
+            r"truncat|incomplete|cut(?:s)?\s*off|mid-sentence|잘렸|잘림|중간|불완전|누락|완료되지",
+            item,
+            re.IGNORECASE,
+        )
+        for item in feedback
     )
 
 
