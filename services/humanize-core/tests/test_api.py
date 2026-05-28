@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from humanize_core.api import create_app
 from humanize_core.config import Settings
 from humanize_core.graph import RewriteGraphRunner
-from humanize_core.im_not_ai import prompts
+from humanize_core.im_not_ai import prompts, resources
 from humanize_core.im_not_ai.audit import (
     SUPPORTED_QUICK_RULE_IDS,
     finding_density,
@@ -238,7 +238,7 @@ async def test_long_fast_request_stays_on_fast_path():
         def __init__(self) -> None:
             self.fast_calls = 0
 
-        async def rewrite_fast(self, request, genre_hint, context):
+        async def rewrite_fast(self, request, context):
             self.fast_calls += 1
             return FastRewriteResult(
                 revisedText=request.text,
@@ -254,7 +254,7 @@ async def test_long_fast_request_stays_on_fast_path():
                 summary=["fast 모드를 유지했습니다."],
             )
 
-        async def detect(self, request, genre_hint, context):
+        async def detect(self, request, context):
             raise AssertionError("long fast request should not switch to strict detection")
 
     llm = CapturingFastLLM()
@@ -324,8 +324,7 @@ def test_prompts_pass_user_selected_rewrite_controls():
     payload = json.loads(
         prompts.fast_user_prompt(
             request,
-            "report",
-            {"estimatedGenre": "report", "metricsBefore": {}, "preservationTerms": []},
+            {"preservationTerms": []},
         )
     )
 
@@ -346,7 +345,6 @@ def test_prompts_pass_user_selected_rewrite_controls():
 
 def _strict_prompt_detection() -> DetectionResult:
     return DetectionResult(
-        estimatedGenre="report",
         sentenceCount=4,
         detectedCount=2,
         aiTellDensity=0.12,
@@ -395,8 +393,7 @@ def test_strict_rewrite_prompt_targets_advanced_quality_not_finding_only():
     payload = json.loads(
         prompts.strict_rewrite_user_prompt(
             request,
-            "report",
-            {"estimatedGenre": "report", "metricsBefore": {}, "preservationTerms": ["데이터"]},
+            {"preservationTerms": ["데이터"]},
             detection,
         )
     )
@@ -409,14 +406,72 @@ def test_strict_rewrite_prompt_targets_advanced_quality_not_finding_only():
     assert "rewriting_playbook" not in payload
     assert "findings" not in payload
     assert "advanced_rewrite_objective" in payload
+    assert "rewrite_strategy" in payload
+    assert "initial_draft" in payload["rewrite_strategy"]
+    assert "rewrite_plan" in payload
     assert "priority_findings" in payload
+    assert "do_not_edit_spans" in payload
     assert payload["priority_findings"][0]["id"] == "f-a2"
+    assert payload["rewrite_plan"][0].startswith("A-2")
     assert any(recipe["category"] == "A" for recipe in payload["targeted_rewrite_recipes"])
+    assert any("직접 인용" in rule for rule in payload["do_not_edit_spans"])
     assert "수정 범위를 finding span으로 제한하지 말고" in rendered_payload
     assert "문장 흐름" in rendered_payload
     assert "리듬" in rendered_payload
     assert "명확성" in rendered_payload
     assert "변경률은 품질 목표가 아니라" in payload["rewrite_guidance"]["rewrite_mode"]
+
+
+def test_strict_rewrite_prompt_patches_previous_draft_on_later_rounds():
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            text="이 기능은 데이터를 통해 성장을 지원합니다.",
+            rewrite_mode="strict",
+            max_rounds=2,
+        )
+    )
+    detection = _strict_prompt_detection()
+
+    payload = json.loads(
+        prompts.strict_rewrite_user_prompt(
+            request,
+            {"preservationTerms": ["데이터"]},
+            detection,
+            previous_revised_text="이 기능은 데이터로 성장을 지원합니다.",
+            audit_feedback=[],
+            review_feedback=["문장 연결이 아직 딱딱합니다."],
+        )
+    )
+
+    assert "patch_previous_draft" in payload["rewrite_strategy"]
+    assert payload["previous_revised_text"] == "이 기능은 데이터로 성장을 지원합니다."
+    assert "전체 재작성 대신" in json.dumps(payload["self_check_required"], ensure_ascii=False)
+
+
+def test_strict_detect_prompt_uses_compact_stric_rules_only_in_detect():
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            text="결론적으로 성과를 통해 결과를 냈습니다.",
+            rewrite_mode="strict",
+        )
+    )
+    context = {"preservationTerms": []}
+    detection = _strict_prompt_detection()
+
+    detect_payload = json.loads(prompts.detect_user_prompt(request, context))
+    rewrite_payload = json.loads(prompts.strict_rewrite_user_prompt(request, context, detection))
+
+    assert detect_payload["rulebook"] == "stric-rules.md"
+    assert "strict_rules" in detect_payload
+    assert "A-1" in detect_payload["strict_rules"]
+    assert "Operational Notes" in detect_payload["strict_rules"]
+    assert "Do not flag" in detect_payload["strict_rules"]
+    assert "A-2 example" in detect_payload["strict_rules"]
+    assert "Detector Contract" in detect_payload["strict_rules"]
+    assert "strict_rules" not in rewrite_payload
+    assert "stric-rules.md" not in json.dumps(rewrite_payload, ensure_ascii=False)
+    assert not hasattr(resources, "ai_tell_taxonomy")
+    assert hasattr(resources, "strict_rules")
 
 
 def test_strict_rewrite_and_review_prompts_stay_compact():
@@ -431,15 +486,40 @@ def test_strict_rewrite_and_review_prompts_stay_compact():
             max_rounds=2,
         )
     )
-    context = {"estimatedGenre": "report", "metricsBefore": {}, "preservationTerms": []}
+    context = {"preservationTerms": []}
     detection = _strict_prompt_detection()
 
-    fast_prompt = prompts.fast_user_prompt(request, "report", context)
-    strict_prompt = prompts.strict_rewrite_user_prompt(request, "report", context, detection)
-    review_prompt = prompts.review_user_prompt(request, "report", context, detection, request.text, [])
+    fast_prompt = prompts.fast_user_prompt(request, context)
+    strict_prompt = prompts.strict_rewrite_user_prompt(request, context, detection)
+    review_prompt = prompts.review_user_prompt(request, context, detection, request.text, [])
 
     assert len(strict_prompt) < len(fast_prompt)
     assert len(review_prompt) < len(fast_prompt)
+
+
+def test_strict_audit_prompt_does_not_embed_scholarship_reference():
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            text="AI 에이전트가 저장된 자료를 정리하고 필요한 자료를 찾아줍니다.",
+            rewrite_mode="strict",
+            max_rounds=2,
+        )
+    )
+    context = {"preservationTerms": ["AI"]}
+
+    payload = json.loads(prompts.audit_user_prompt(request, context, request.text, []))
+    rendered_payload = json.dumps(payload, ensure_ascii=False)
+
+    assert "scholarship_constraints" not in payload
+    assert "번역학계" not in rendered_payload
+    assert "checklist_13" in payload
+
+
+def test_removed_reference_resources_have_no_runtime_loaders():
+    assert not hasattr(resources, "scholarship")
+    assert not hasattr(resources, "rewriting_playbook")
+    assert not hasattr(resources, "ai_tell_taxonomy")
+    assert hasattr(resources, "strict_rules")
 
 
 async def test_stub_rewrite_uses_preserve_formatting_switch():
@@ -451,8 +531,8 @@ async def test_stub_rewrite_uses_preserve_formatting_switch():
     )
     llm = StubRewriteLLM()
 
-    preserved = await llm.rewrite(preserving, "report")
-    normalized = await llm.rewrite(normalizing, "report")
+    preserved = await llm.rewrite(preserving)
+    normalized = await llm.rewrite(normalizing)
 
     assert preserved.revisedText == "첫 문장.  둘째 문장."
     assert normalized.revisedText == "첫 문장. 둘째 문장."
@@ -460,10 +540,10 @@ async def test_stub_rewrite_uses_preserve_formatting_switch():
 
 async def test_protected_terms_are_audited_after_rewrite():
     class DropsProtectedTermLLM:
-        async def rewrite(self, request, genre_hint):
+        async def rewrite(self, request):
             raise AssertionError("fast path should call rewrite_fast")
 
-        async def rewrite_fast(self, request, genre_hint, context):
+        async def rewrite_fast(self, request, context):
             return FastRewriteResult(
                 revisedText="정책은 유지됩니다.",
                 changes=[
@@ -488,15 +568,15 @@ async def test_protected_terms_are_audited_after_rewrite():
     assert response.changes[0].riskLevel == "high"
 
 
-async def test_internal_genre_hint_is_inferred_from_text():
+async def test_prepare_context_contains_only_preservation_terms():
     captured = {}
 
     class CapturingLLM:
-        async def rewrite(self, request, genre_hint):
+        async def rewrite(self, request):
             raise AssertionError("fast path should call rewrite_fast")
 
-        async def rewrite_fast(self, request, genre_hint, context):
-            captured["genre_hint"] = genre_hint
+        async def rewrite_fast(self, request, context):
+            captured["context"] = context
             return FastRewriteResult(
                 revisedText=request.text,
                 changes=[Change(original="", revised="", reason="유지했습니다.", type="clarity", riskLevel="low")],
@@ -509,7 +589,7 @@ async def test_internal_genre_hint_is_inferred_from_text():
 
     await RewriteGraphRunner(_settings(), CapturingLLM()).run(request)
 
-    assert captured["genre_hint"] == "report"
+    assert set(captured["context"]) == {"preservationTerms"}
 
 
 def test_local_quick_rules_cover_fast_source_rule_ids():
@@ -569,32 +649,45 @@ def test_local_quick_rules_cover_fast_source_rule_ids():
 
 def test_local_detect_covers_reinforced_quick_rule_cases():
     cases = [
-        ("A-16", "그는 말했다. 그는 다시 말했다. 그것은 반복됐다.", "report"),
-        ("B-1", "소버린 AI(Sovereign AI)는 중요한 전략이다.", "report"),
-        ("C-9", "(1) 계획을 세운다. (2) 실행한다.", "report"),
-        ("E-2", "첫째다. 둘째다. 셋째다. 넷째다.", "report"),
-        ("E-7", "우리는 실행한다. 그런데 이건 좋아요. 다음 단계입니다.", "blog"),
-        ("F-4", "전략적 실행성과 구조화가 필요하다.", "report"),
-        ("G-3", "균형 있게 보고 신중하게 판단하며 양쪽 모두와 두 가지 모두의 장점도 있지만 균형이 필요하다.", "report"),
-        ("J-3", "- 첫 번째 항목\n- 두 번째 항목", "report"),
+        ("A-16", "그는 말했다. 그는 다시 말했다. 그것은 반복됐다."),
+        ("B-1", "소버린 AI(Sovereign AI)는 중요한 전략이다."),
+        ("C-9", "(1) 계획을 세운다. (2) 실행한다."),
+        ("E-2", "첫째다. 둘째다. 셋째다. 넷째다."),
+        ("E-7", "우리는 실행한다. 그런데 이건 좋아요. 다음 단계입니다."),
+        ("F-4", "전략적 실행성과 구조화가 필요하다."),
+        ("G-3", "균형 있게 보고 신중하게 판단하며 양쪽 모두와 두 가지 모두의 장점도 있지만 균형이 필요하다."),
+        ("J-3", "- 첫 번째 항목\n- 두 번째 항목"),
     ]
 
-    for rule_id, text, genre in cases:
-        detection = local_detect(text, genre, focus_categories=[rule_id])
+    for rule_id, text in cases:
+        detection = local_detect(text, focus_categories=[rule_id])
         assert rule_id in {finding.category for finding in detection.findings}
 
 
-def test_local_detection_uses_original_taxonomy_score_and_density():
-    detection = local_detect("성과를 통해 결과를 냈다.", "report", focus_categories=["A-2"])
+def test_local_detection_uses_rule_score_and_density():
+    detection = local_detect("성과를 통해 결과를 냈다.", focus_categories=["A-2"])
 
     assert detection.severityWeightedScore == 5.0
     assert detection.aiTellDensity == finding_density("성과를 통해 결과를 냈다.", detection.findings)
     assert finding_score(detection.findings) == 5.0
 
 
+def test_local_detector_severity_matches_strict_rulebook_for_non_decisive_style_rules():
+    cases = [
+        ("C-10", "전략: 실행으로 전환"),
+        ("H-1", "또한 우리는 실행합니다."),
+        ("J-2", '"하나" "둘" "셋" "넷" "다섯" "여섯"'),
+    ]
+
+    for rule_id, text in cases:
+        detection = local_detect(text, focus_categories=[rule_id])
+        severities = {finding.severity for finding in detection.findings if finding.category == rule_id}
+        assert severities == {"S2"}
+
+
 def test_local_detection_excludes_do_not_spans():
     text = '"데이터를 통해 성장한다"라고 말했다. API는 유지한다.'
-    detection = local_detect(text, "report")
+    detection = local_detect(text)
 
     assert "A-2" not in {finding.category for finding in detection.findings}
 
@@ -603,8 +696,8 @@ def test_a16_pronoun_literal_translation_golden_case():
     literal = "메리는 그녀가 그녀를 그리워해서 그녀의 어머니에게 전화했다."
     natural = "메리는 어머니가 그리워서 전화를 걸었다."
 
-    literal_detection = local_detect(literal, "report", focus_categories=["A-16"])
-    natural_detection = local_detect(natural, "report", focus_categories=["A-16"])
+    literal_detection = local_detect(literal, focus_categories=["A-16"])
+    natural_detection = local_detect(natural, focus_categories=["A-16"])
 
     assert "A-16" in {finding.category for finding in literal_detection.findings}
     assert "A-16" not in {finding.category for finding in natural_detection.findings}
@@ -614,7 +707,7 @@ def test_a16_pronoun_literal_translation_golden_case():
 def test_a17_deul_overuse_stays_metric_only():
     text = "이러한 데이터들과 정보들과 결과들이 중요한 아이디어들을 보여준다."
 
-    detection = local_detect(text, "report")
+    detection = local_detect(text)
 
     assert "A-17" not in SUPPORTED_QUICK_RULE_IDS
     assert "A-17" not in {finding.category for finding in detection.findings}
@@ -624,7 +717,7 @@ def test_a17_deul_overuse_stays_metric_only():
 def test_a8_double_passive_golden_case():
     text = "이 문제는 분석되어진다."
 
-    detection = local_detect(text, "report", focus_categories=["A-8"])
+    detection = local_detect(text, focus_categories=["A-8"])
 
     assert "A-8" in {finding.category for finding in detection.findings}
     assert double_passive_count(text) >= 1
@@ -632,10 +725,10 @@ def test_a8_double_passive_golden_case():
 
 async def test_fast_mode_rolls_back_when_change_rate_exceeds_half():
     class OverRewriteLLM:
-        async def rewrite(self, request, genre_hint):
+        async def rewrite(self, request):
             raise AssertionError("fast path should call rewrite_fast")
 
-        async def rewrite_fast(self, request, genre_hint, context):
+        async def rewrite_fast(self, request, context):
             return FastRewriteResult(
                 revisedText="완전히 다른 결론과 새로운 주장으로 바뀐 문장입니다.",
                 changes=[
@@ -662,17 +755,72 @@ async def test_fast_mode_rolls_back_when_change_rate_exceeds_half():
     assert any("원문으로 롤백" in warning for warning in response.warnings)
 
 
+async def test_strict_change_rate_alone_is_review_signal_not_rollback():
+    class HighChangeStrictLLM:
+        async def rewrite(self, request):
+            raise AssertionError("strict graph should call node-specific methods")
+
+        async def detect(self, request, context):
+            return DetectionResult(sentenceCount=1)
+
+        async def rewrite_strict(
+            self,
+            request,
+            context,
+            detection,
+            previous_revised_text,
+            audit_feedback,
+            review_feedback,
+            *,
+            use_escalation=False,
+        ):
+            return StrictRewriteResult(
+                revisedText="나가 라다 바마 아사 차자 타카 하파 파하 카타 자차 사아 마바 다라 가나.",
+                changes=[
+                    Change(
+                        original=request.text,
+                        revised="나가 라다 바마 아사 차자 타카 하파 파하 카타 자차 사아 마바 다라 가나.",
+                        reason="테스트용 고변경률 초안입니다.",
+                        type="clarity",
+                        riskLevel="low",
+                    )
+                ],
+                summary=["변경률은 높지만 보존 누락은 없습니다."],
+            )
+
+        async def audit(self, request, context, revised_text, changes):
+            return AuditResult(status="full_pass", reason="보존 검사를 통과했습니다.")
+
+        async def review(self, request, context, detection, revised_text, audit_warnings):
+            return NaturalnessReviewResult(decision="accept", reason="변경률 외 차단 신호는 없습니다.")
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            text="가나 다라 마바 사아 자차 카타 파하 하파 타카 차자 아사 바마 라다 나가.",
+            rewrite_mode="strict",
+            max_rounds=2,
+            protected_terms=[],
+        )
+    )
+
+    response = await RewriteGraphRunner(_settings(), HighChangeStrictLLM()).run(request)
+
+    assert response.revisedText != request.text
+    assert response.usage.rounds == 1
+    assert any("change_rate_over_50" in warning for warning in response.warnings)
+    assert not any("원문을 반환" in warning for warning in response.warnings)
+
+
 async def test_strict_graph_calls_detect_rewrite_audit_review_nodes():
     calls = []
 
     class StrictFakeLLM:
-        async def rewrite(self, request, genre_hint):
+        async def rewrite(self, request):
             raise AssertionError("strict graph should call node-specific methods")
 
-        async def detect(self, request, genre_hint, context):
+        async def detect(self, request, context):
             calls.append("detect")
             return DetectionResult(
-                estimatedGenre="report",
                 sentenceCount=1,
                 inputTokens=1,
                 outputTokens=2,
@@ -681,7 +829,6 @@ async def test_strict_graph_calls_detect_rewrite_audit_review_nodes():
         async def rewrite_strict(
             self,
             request,
-            genre_hint,
             context,
             detection,
             previous_revised_text,
@@ -707,11 +854,11 @@ async def test_strict_graph_calls_detect_rewrite_audit_review_nodes():
                 outputTokens=4,
             )
 
-        async def audit(self, request, genre_hint, context, revised_text, changes):
+        async def audit(self, request, context, revised_text, changes):
             calls.append("audit")
             return AuditResult(status="full_pass", reason="보존 검사를 통과했습니다.", inputTokens=5, outputTokens=6)
 
-        async def review(self, request, genre_hint, context, detection, revised_text, audit_warnings):
+        async def review(self, request, context, detection, revised_text, audit_warnings):
             calls.append("review")
             return NaturalnessReviewResult(decision="accept", reason="잔존 패턴이 없습니다.", inputTokens=7, outputTokens=8)
 
@@ -733,17 +880,16 @@ async def test_strict_conditional_audit_retries_rewrite_round():
     audit_calls = 0
 
     class ConditionalAuditLLM:
-        async def rewrite(self, request, genre_hint):
+        async def rewrite(self, request):
             raise AssertionError("strict graph should call node-specific methods")
 
-        async def detect(self, request, genre_hint, context):
+        async def detect(self, request, context):
             calls.append("detect")
-            return DetectionResult(estimatedGenre="report", sentenceCount=1)
+            return DetectionResult(sentenceCount=1)
 
         async def rewrite_strict(
             self,
             request,
-            genre_hint,
             context,
             detection,
             previous_revised_text,
@@ -767,14 +913,14 @@ async def test_strict_conditional_audit_retries_rewrite_round():
                 summary=["정밀 파이프라인을 통과했습니다."],
             )
 
-        async def audit(self, request, genre_hint, context, revised_text, changes):
+        async def audit(self, request, context, revised_text, changes):
             nonlocal audit_calls
             audit_calls += 1
             calls.append("audit")
             status = "conditional_pass" if audit_calls == 1 else "full_pass"
             return AuditResult(status=status, reason="조건부 감사 결과입니다.")
 
-        async def review(self, request, genre_hint, context, detection, revised_text, audit_warnings):
+        async def review(self, request, context, detection, revised_text, audit_warnings):
             calls.append("review")
             return NaturalnessReviewResult(decision="accept", reason="잔존 패턴이 없습니다.")
 
@@ -802,16 +948,15 @@ async def test_strict_blocks_truncated_final_draft_and_does_not_seed_retry_with_
     )
 
     class TruncatedStrictLLM:
-        async def rewrite(self, request, genre_hint):
+        async def rewrite(self, request):
             raise AssertionError("strict graph should call node-specific methods")
 
-        async def detect(self, request, genre_hint, context):
-            return DetectionResult(estimatedGenre="report", sentenceCount=6)
+        async def detect(self, request, context):
+            return DetectionResult(sentenceCount=6)
 
         async def rewrite_strict(
             self,
             request,
-            genre_hint,
             context,
             detection,
             previous_revised_text,
@@ -835,10 +980,10 @@ async def test_strict_blocks_truncated_final_draft_and_does_not_seed_retry_with_
                 summary=["중간에서 잘린 초안입니다."],
             )
 
-        async def audit(self, request, genre_hint, context, revised_text, changes):
+        async def audit(self, request, context, revised_text, changes):
             return AuditResult(status="full_pass", reason="모델 감사는 통과했습니다.")
 
-        async def review(self, request, genre_hint, context, detection, revised_text, audit_warnings):
+        async def review(self, request, context, detection, revised_text, audit_warnings):
             return NaturalnessReviewResult(decision="accept", reason="모델 리뷰는 통과했습니다.")
 
     request = RewriteRequestForTest.model_validate(
@@ -867,16 +1012,15 @@ async def test_strict_falls_back_to_last_display_safe_round_when_final_round_is_
     safe_text = text.replace("자료를 찾아 작은", "자료를 찾아서 작은")
 
     class FinalRoundTruncatesLLM:
-        async def rewrite(self, request, genre_hint):
+        async def rewrite(self, request):
             raise AssertionError("strict graph should call node-specific methods")
 
-        async def detect(self, request, genre_hint, context):
-            return DetectionResult(estimatedGenre="report", sentenceCount=6)
+        async def detect(self, request, context):
+            return DetectionResult(sentenceCount=6)
 
         async def rewrite_strict(
             self,
             request,
-            genre_hint,
             context,
             detection,
             previous_revised_text,
@@ -903,10 +1047,10 @@ async def test_strict_falls_back_to_last_display_safe_round_when_final_round_is_
                 summary=[f"{rewrite_calls}라운드 초안입니다."],
             )
 
-        async def audit(self, request, genre_hint, context, revised_text, changes):
+        async def audit(self, request, context, revised_text, changes):
             return AuditResult(status="full_pass", reason="모델 감사는 통과했습니다.")
 
-        async def review(self, request, genre_hint, context, detection, revised_text, audit_warnings):
+        async def review(self, request, context, detection, revised_text, audit_warnings):
             decision = "rewrite_round_2" if rewrite_calls == 1 else "accept"
             return NaturalnessReviewResult(decision=decision, reason="테스트용 리뷰입니다.")
 
@@ -999,7 +1143,6 @@ async def test_openai_rewrite_uses_responses_structured_output(monkeypatch):
     llm = OpenAIRewriteLLM(api_key="test-key", model_name="gpt-5-mini")
     result = await llm.rewrite(
         RewriteRequestForTest.model_validate(_payload()),
-        genre_hint="report",
     )
 
     assert result.revisedText == "개선된 문장입니다."
@@ -1079,8 +1222,7 @@ async def test_openrouter_fast_rewrite_uses_json_schema_and_usage(monkeypatch):
 
     result = await llm.rewrite_fast(
         RewriteRequestForTest.model_validate(_payload()),
-        genre_hint="report",
-        context={"estimatedGenre": "report", "metricsBefore": {}, "preservationTerms": []},
+        context={"preservationTerms": []},
     )
 
     assert result.revisedText == "개선된 문장입니다."
@@ -1105,7 +1247,7 @@ async def test_openrouter_strict_detect_omits_temperature_for_parameter_routing(
                 choices=[
                     SimpleNamespace(
                         message=SimpleNamespace(
-                            content=json.dumps({"estimatedGenre": "report"}, ensure_ascii=False)
+                            content=json.dumps({"sentenceCount": 1}, ensure_ascii=False)
                         )
                     )
                 ],
@@ -1143,11 +1285,9 @@ async def test_openrouter_strict_detect_omits_temperature_for_parameter_routing(
 
     result = await llm.detect(
         RewriteRequestForTest.model_validate(_payload(rewrite_mode="strict")),
-        genre_hint="report",
-        context={"estimatedGenre": "report", "metricsBefore": {}, "preservationTerms": []},
+        context={"preservationTerms": []},
     )
 
-    assert result.estimatedGenre == "report"
     assert result.inputTokens == 5
     assert result.outputTokens == 3
     assert calls[0]["model"] == "openai/gpt-5-mini"
@@ -1188,7 +1328,7 @@ def test_openrouter_schema_marks_pydantic_default_fields_required():
 
 
 def test_metrics_v2_computes_im_not_ai_signal_keys():
-    metrics = compute_all_v2("결론적으로, API를 통해 성과를 확인할 수 있다.", genre="essay")
+    metrics = compute_all_v2("결론적으로, API를 통해 성과를 확인할 수 있다.")
 
     assert metrics["version"] == "v2.0"
     assert "v2_metrics" in metrics

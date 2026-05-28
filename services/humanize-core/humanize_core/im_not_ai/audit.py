@@ -3,7 +3,6 @@ from collections import Counter
 from difflib import SequenceMatcher
 from typing import Iterable
 
-from humanize_core.im_not_ai import metrics_v2
 from humanize_core.im_not_ai.schemas import DetectionResult, Finding, SelfCheckItem
 from humanize_core.schemas import Change
 
@@ -115,7 +114,7 @@ _QUICK_PATTERNS: tuple[tuple[str, str, str, str, re.Pattern[str], str], ...] = (
     ("C-7", "기계적 3단 접속", "S2", "span", re.compile(r"먼저|반면|결국"), "접속사를 줄이거나 본문에 녹입니다."),
     ("C-8", "대칭 대구 공식", "S2", "span", re.compile(r"[가-힣A-Za-z0-9]+인가[,\s·]+[가-힣A-Za-z0-9]+인가"), "한 번만 남기고 평서문으로 바꿉니다."),
     ("C-9", "숫자 괄호 인덱싱", "S2", "span", re.compile(r"(?:\(\d+\)|\d+\)|[①②③④⑤⑥⑦⑧⑨])"), "본문에 녹이거나 단순 줄바꿈으로 바꿉니다."),
-    ("C-10", "콜론 부제 헤딩 반복", "S1", "span", re.compile(r"(?m)^.{1,40}:\s*.{1,80}$"), "짧은 헤딩 또는 평서문으로 바꿉니다."),
+    ("C-10", "콜론 부제 헤딩 반복", "S2", "span", re.compile(r"(?m)^.{1,40}:\s*.{1,80}$"), "짧은 헤딩 또는 평서문으로 바꿉니다."),
     ("C-11", "연결어미 뒤 쉼표", "S1", "span", re.compile(r"(?:고|며|지만|면서|아서|어서),"), "불필요한 쉼표를 제거합니다."),
     ("D-2", "AI 관용구", "S1", "span", re.compile(r"시사하는\s*바가\s*크다|주목할\s*만하다"), "삭제하거나 구체 결론으로 바꿉니다."),
     ("D-3", "강조 부사", "S1", "span", re.compile(r"본질적으로|핵심적으로"), "대부분 삭제합니다."),
@@ -129,7 +128,7 @@ _QUICK_PATTERNS: tuple[tuple[str, str, str, str, re.Pattern[str], str], ...] = (
     ("G-1", "미래 단정", "S2", "span", re.compile(r"(?:것이다|할\s*것이다)"), "현재형·확정형으로 줄입니다."),
     ("G-2", "추정 남발", "S2", "span", re.compile(r"로\s*보인다|인\s*듯하다|듯하다"), "단언 가능한 곳은 단언합니다."),
     ("G-3", "안전 균형 lexicon", "S2", "span", re.compile(r"양쪽\s*모두|두\s*가지\s*모두|장점도\s*있지만|신중하게|균형"), "구체 비교나 조건부 판단으로 바꿉니다."),
-    ("H-1", "문두 접속사", "S1", "span", re.compile(r"(?:^|[.!?\n]\s*)(또한|따라서|즉|나아가|아울러|게다가|더욱이)"), "문장 자체의 흐름으로 연결합니다."),
+    ("H-1", "문두 접속사", "S2", "span", re.compile(r"(?:^|[.!?\n]\s*)(또한|따라서|즉|나아가|아울러|게다가|더욱이)"), "문장 자체의 흐름으로 연결합니다."),
     ("H-3", "메타 진입", "S1", "span", re.compile(r"이는|이\s*점에서|이\s*관점에서|이\s*말은"), "본문에 녹이거나 삭제합니다."),
     ("H-4", "재정의 접속사 즉 남발", "S2", "span", re.compile(r"즉"), "1회 정도만 남깁니다."),
     ("I-1", "형식명사 결말", "S1", "span", re.compile(r"(?:인|한)\s*것이다"), "평서형으로 줄입니다."),
@@ -143,24 +142,6 @@ _QUICK_PATTERNS: tuple[tuple[str, str, str, str, re.Pattern[str], str], ...] = (
 
 def split_sentences(text: str) -> list[str]:
     return [match.group(0).strip() for match in _SENTENCE_RE.finditer(text) if match.group(0).strip()]
-
-
-def estimate_genre(genre_hint: str, text: str) -> str:
-    if genre_hint in {"blog", "column"}:
-        return "blog"
-    if genre_hint in {"report", "proposal", "meeting_notes"}:
-        return "report"
-    if genre_hint == "email":
-        return "business"
-    if re.search(r"칼럼|독자|관점|블로그", text[:500]):
-        return "blog"
-    if re.search(r"보고|분석|제안|회의|성과|지표", text[:500]):
-        return "report"
-    return "essay"
-
-
-def compute_metrics(text: str, genre: str) -> dict:
-    return metrics_v2.compute_all(text, genre=genre if genre in {"essay", "blog"} else "essay")
 
 
 def collect_preservation_terms(text: str, protected_terms: Iterable[str]) -> list[str]:
@@ -186,7 +167,6 @@ def change_rate(original: str, revised: str) -> float:
 
 def local_detect(
     text: str,
-    genre: str,
     focus_categories: list[str] | None = None,
     protected_terms: Iterable[str] | None = None,
 ) -> DetectionResult:
@@ -215,12 +195,11 @@ def local_detect(
                 )
             )
 
-    findings.extend(_document_level_findings(text, genre, focus, protected_ranges))
+    findings.extend(_document_level_findings(text, focus, protected_ranges))
     findings = _dedupe_findings(findings)
     category_summary = finding_category_summary(findings)
     sentence_count = len(split_sentences(text))
     return DetectionResult(
-        estimatedGenre=genre,
         sentenceCount=sentence_count,
         sentenceLengthStats=sentence_length_stats(text),
         detectedCount=len(findings),
@@ -233,7 +212,6 @@ def local_detect(
 
 def _document_level_findings(
     text: str,
-    genre: str,
     focus: set[str],
     protected_ranges: list[tuple[int, int]],
 ) -> list[Finding]:
@@ -276,7 +254,7 @@ def _document_level_findings(
                 id="local-D-1-document",
                 category="D-1",
                 categoryLabel="결산 피벗 반복",
-                severity="S1",
+                severity="S2",
                 scope="document",
                 reason=f"결산 피벗 표현이 {pivot_count}회 반복됐습니다.",
                 suggestedFix="1~2건만 남기고 나머지는 문맥 속 종결로 바꿉니다.",
@@ -303,7 +281,7 @@ def _document_level_findings(
                 id="local-A-16-document",
                 category="A-16",
                 categoryLabel="영어 대명사 직역 반복",
-                severity="S1",
+                severity="S2",
                 scope="document",
                 reason=f"그/그녀/그것/그들 계열 대명사가 {pronoun_count}회 반복됐습니다.",
                 suggestedFix="절반 이상 생략하거나 호칭·명사구로 바꿉니다.",
@@ -324,7 +302,7 @@ def _document_level_findings(
         )
 
     safe_balance_count = sum(text.count(term) for term in ("양쪽 모두", "두 가지 모두", "장점도 있지만", "신중하게", "균형"))
-    if safe_balance_count > 4 and genre in {"business", "report"} and _focus_allows("G-3", focus):
+    if safe_balance_count > 4 and _focus_allows("G-3", focus):
         findings.append(
             Finding(
                 id="local-G-3-document",
@@ -332,7 +310,7 @@ def _document_level_findings(
                 categoryLabel="안전 균형 lexicon 반복",
                 severity="S2",
                 scope="document",
-                reason=f"정책·보고서 장르에서 균형 어휘가 {safe_balance_count}회 반복됐습니다.",
+                reason=f"균형 어휘가 {safe_balance_count}회 반복됐습니다.",
                 suggestedFix="구체 기준, 조건부 판단, 한쪽 입장으로 치환합니다.",
             )
         )
@@ -344,14 +322,14 @@ def _document_level_findings(
                 id="local-J-2-document",
                 category="J-2",
                 categoryLabel="따옴표 강조 남발",
-                severity="S1",
+                severity="S2",
                 scope="document",
                 reason="따옴표 강조가 5개 어휘를 초과한 것으로 추정됩니다.",
                 suggestedFix="핵심 한두 개만 남기고 평어로 바꿉니다.",
             )
         )
 
-    if _mixed_register(text) and genre not in {"report"} and _focus_allows("E-7", focus):
+    if _mixed_register(text) and _focus_allows("E-7", focus):
         findings.append(
             Finding(
                 id="local-E-7-document",
@@ -360,7 +338,7 @@ def _document_level_findings(
                 severity="S2",
                 scope="document",
                 reason="한 문서 안에서 해라체·해요체·합쇼체 등 경어 단계가 섞였습니다.",
-                suggestedFix="문서 장르에 맞는 하나의 register로 통일합니다.",
+                suggestedFix="하나의 register로 통일합니다.",
             )
         )
     return findings
@@ -490,11 +468,6 @@ def self_check_items(
             note=f"변경률 {rate:.2f}%",
         ),
         SelfCheckItem(
-            name="장르 이탈 없음",
-            passed=True,
-            note="자동 검사는 register와 문서 타입만 보조 확인합니다.",
-        ),
-        SelfCheckItem(
             name="register 보존",
             passed=register_compatible,
             note="격식체 호환" if register_compatible else "격식체 변화 후보",
@@ -524,12 +497,12 @@ def quality_grade(
     s2_count = sum(1 for finding in residual_findings if finding.severity == "S2")
     if s1_count >= 3 or rate > 50:
         return "D", "S1 잔존 3건 이상이거나 변경률 50% 초과입니다."
-    if s1_count >= 1 or passed <= 4:
-        return "C", "S1 잔존 또는 자체검증 4항 이하 통과로 strict 모드 권고 대상입니다."
+    if s1_count >= 1 or passed <= max(len(checks) - 2, 0):
+        return "C", "S1 잔존 또는 자체검증 통과 항목 부족으로 strict 모드 권고 대상입니다."
     if s2_count <= 2 and 10 <= rate <= 25 and passed == len(checks):
         return "A", "S1 0건, S2 2건 이하, 변경률 10~25%, 자체검증 전 항목 통과입니다."
-    if s2_count <= 4 and passed >= 5:
-        return "B", "S1 0건, S2 4건 이하, 자체검증 5항 이상 통과입니다."
+    if s2_count <= 4 and passed >= max(len(checks) - 1, 0):
+        return "B", "S1 0건, S2 4건 이하, 자체검증 대부분 통과입니다."
     return "C", "S2 잔존 또는 자체검증 결과가 Fast 기준 경계값을 넘었습니다."
 
 
@@ -557,7 +530,7 @@ def strict_quality_grade(
     return "C"
 
 
-def over_polish_signals(original: str, revised: str, genre: str) -> list[str]:
+def over_polish_signals(original: str, revised: str) -> list[str]:
     signals: list[str] = []
     rate = change_rate(original, revised)
     if rate > 50:
@@ -566,7 +539,7 @@ def over_polish_signals(original: str, revised: str, genre: str) -> list[str]:
         signals.append("change_rate_over_30")
     if _formal_register_compatible(original, revised) is False:
         signals.append("register_drift")
-    if genre in {"business", "report"} and re.search(r"듯|결|숨결|여운|풍경|서사|빛난다", revised):
+    if re.search(r"듯|결|숨결|여운|풍경|서사|빛난다", revised):
         signals.append("literary_tone_added")
     original_terms = set(re.findall(r"[가-힣A-Za-z0-9]{2,}", original))
     revised_terms = set(re.findall(r"[가-힣A-Za-z0-9]{2,}", revised))

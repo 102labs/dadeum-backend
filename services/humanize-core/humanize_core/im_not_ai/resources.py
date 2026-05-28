@@ -16,14 +16,5 @@ def quick_rules() -> str:
     return load_resource("quick-rules.md")
 
 
-def ai_tell_taxonomy() -> str:
-    return load_resource("ai-tell-taxonomy.md")
-
-
-def rewriting_playbook() -> str:
-    return load_resource("rewriting-playbook.md")
-
-
-def scholarship() -> str:
-    return load_resource("scholarship.md")
-
+def strict_rules() -> str:
+    return load_resource("stric-rules.md")

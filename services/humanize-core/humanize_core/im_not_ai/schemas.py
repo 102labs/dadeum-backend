@@ -44,7 +44,6 @@ class Finding(BaseModel):
 class DetectionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    estimatedGenre: str
     sentenceCount: int = 0
     sentenceLengthStats: dict[str, float | bool] = Field(default_factory=dict)
     detectedCount: int = 0
@@ -153,7 +152,4 @@ class NaturalnessReviewResult(BaseModel):
 class HumanizeContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    estimatedGenre: str
-    metricsBefore: dict = Field(default_factory=dict)
-    protectedTerms: list[str] = Field(default_factory=list)
     preservationTerms: list[str] = Field(default_factory=list)

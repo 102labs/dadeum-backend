@@ -9,13 +9,12 @@ from humanize_core.im_not_ai.audit import (
     build_audit_warnings,
     change_rate,
     collect_preservation_terms,
-    compute_metrics,
-    estimate_genre,
     finding_category_summary,
     finding_density,
     finding_score,
     local_detect,
     mark_high_risk_if_needed,
+    missing_preservation_terms,
     over_polish_signals,
     quality_grade,
     score_improvement,
@@ -51,7 +50,6 @@ _INCOMPLETE_WARNING_RE = re.compile(
 
 class RewriteState(TypedDict, total=False):
     request: RewriteRequest
-    genre_hint: str
     selected_mode: str
     humanize_context: dict
     warnings: list[str]
@@ -112,24 +110,16 @@ class RewriteGraphRunner:
         if text_length > self.settings.max_chars:
             raise InputLimitError(f"text length exceeds HUMANIZE_MAX_CHARS ({self.settings.max_chars})")
 
-        genre_hint = _infer_genre_hint(request.text)
-
         selected_mode = request.rewrite_mode
         warnings: list[str] = []
 
-        genre = estimate_genre(genre_hint, request.text)
-        metrics_before = compute_metrics(request.text, genre)
         preservation_terms = collect_preservation_terms(request.text, request.protected_terms)
         context = HumanizeContext(
-            estimatedGenre=genre,
-            metricsBefore=metrics_before,
-            protectedTerms=request.protected_terms,
             preservationTerms=preservation_terms,
         ).model_dump()
         max_rounds = min(request.max_rounds, self.settings.strict_max_rounds) if selected_mode == "strict" else 1
 
         return {
-            "genre_hint": genre_hint,
             "selected_mode": selected_mode,
             "humanize_context": context,
             "warnings": warnings,
@@ -139,16 +129,13 @@ class RewriteGraphRunner:
 
     async def _fast_rewrite(self, state: RewriteState) -> RewriteState:
         request = state["request"]
-        genre_hint = state["genre_hint"]
         if hasattr(self.llm, "rewrite_fast"):
             fast_result: FastRewriteResult = await self.llm.rewrite_fast(  # type: ignore[attr-defined]
                 request,
-                genre_hint,
                 state["humanize_context"],
             )
             residual = _local_detection(
                 request,
-                state["humanize_context"]["estimatedGenre"],
                 text=fast_result.revisedText,
             )
             self_check = fast_result.selfCheck or [
@@ -199,7 +186,7 @@ class RewriteGraphRunner:
             )
             return {"llm_result": llm_result, "warnings": _dedupe(warnings), "round": 1}
 
-        llm_result = await self.llm.rewrite(request, genre_hint)
+        llm_result = await self.llm.rewrite(request)
         return {"llm_result": llm_result}
 
     async def _fast_audit(self, state: RewriteState) -> RewriteState:
@@ -215,11 +202,10 @@ class RewriteGraphRunner:
 
     async def _detect(self, state: RewriteState) -> RewriteState:
         request = state["request"]
-        local = _local_detection(request, state["humanize_context"]["estimatedGenre"])
+        local = _local_detection(request)
         if hasattr(self.llm, "detect"):
             model_detection: DetectionResult = await self.llm.detect(  # type: ignore[attr-defined]
                 request,
-                state["genre_hint"],
                 state["humanize_context"],
             )
             detection = _merge_detections(request.text, local, model_detection)
@@ -229,7 +215,6 @@ class RewriteGraphRunner:
 
     async def _strict_rewrite(self, state: RewriteState) -> RewriteState:
         request = state["request"]
-        genre_hint = state["genre_hint"]
         round_number = state.get("round", 0) + 1
         previous_result = _previous_strict_seed(state)
         previous = previous_result.revisedText if previous_result else None
@@ -241,7 +226,6 @@ class RewriteGraphRunner:
         if hasattr(self.llm, "rewrite_strict"):
             strict_result: StrictRewriteResult = await self.llm.rewrite_strict(  # type: ignore[attr-defined]
                 request,
-                genre_hint,
                 state["humanize_context"],
                 state["detection"],
                 previous,
@@ -263,7 +247,7 @@ class RewriteGraphRunner:
                 "round": round_number,
             }
 
-        llm_result = await self.llm.rewrite(request, genre_hint)
+        llm_result = await self.llm.rewrite(request)
         strict_result = StrictRewriteResult(
             revisedText=llm_result.revisedText,
             changes=llm_result.changes,
@@ -277,7 +261,11 @@ class RewriteGraphRunner:
     async def _strict_audit(self, state: RewriteState) -> RewriteState:
         request = state["request"]
         llm_result = state["llm_result"]
-        base_local_warnings = build_audit_warnings(request.text, llm_result.revisedText, request.protected_terms)
+        base_local_warnings = _strict_preservation_warnings(
+            request.text,
+            llm_result.revisedText,
+            request.protected_terms,
+        )
         completion_warnings = _strict_completion_warnings(request, llm_result.revisedText)
         local_warnings = _dedupe([*base_local_warnings, *completion_warnings])
         local_flagged = _local_flagged_edits(request, llm_result, local_warnings)
@@ -285,7 +273,6 @@ class RewriteGraphRunner:
         if hasattr(self.llm, "audit"):
             model_audit: AuditResult = await self.llm.audit(  # type: ignore[attr-defined]
                 request,
-                state["genre_hint"],
                 state["humanize_context"],
                 llm_result.revisedText,
                 [change.model_dump() for change in llm_result.changes],
@@ -334,16 +321,14 @@ class RewriteGraphRunner:
         llm_result = state["llm_result"]
         residual = _local_detection(
             request,
-            state["humanize_context"]["estimatedGenre"],
             text=llm_result.revisedText,
         )
         audit_warnings = state["audit_result"].warnings
-        signals = over_polish_signals(request.text, llm_result.revisedText, state["humanize_context"]["estimatedGenre"])
+        signals = over_polish_signals(request.text, llm_result.revisedText)
 
         if hasattr(self.llm, "review"):
             model_review: NaturalnessReviewResult = await self.llm.review(  # type: ignore[attr-defined]
                 request,
-                state["genre_hint"],
                 state["humanize_context"],
                 state["detection"],
                 llm_result.revisedText,
@@ -401,21 +386,6 @@ class RewriteGraphRunner:
         return {"response": response}
 
 
-def _infer_genre_hint(text: str) -> str:
-    lowered = text.lower()
-    if re.search(r"\bdear\b|안녕하세요|감사합니다|regards\b", lowered):
-        return "email"
-    if re.search(r"회의|참석자|안건|minutes|meeting", lowered):
-        return "meeting_notes"
-    if re.search(r"제안|견적|proposal|scope|deliverable", lowered):
-        return "proposal"
-    if re.search(r"보고|분석|결과|report|metric", lowered):
-        return "report"
-    if re.search(r"블로그|구독|독자|blog", lowered):
-        return "blog"
-    return "formal"
-
-
 def _route_after_prepare(state: RewriteState) -> str:
     return "strict" if state.get("selected_mode") == "strict" else "fast"
 
@@ -460,17 +430,16 @@ def _merge_detections(text: str, local: DetectionResult, model_detection: Detect
     )
 
 
-def _local_detection(request: RewriteRequest, genre: str, *, text: str | None = None) -> DetectionResult:
+def _local_detection(request: RewriteRequest, *, text: str | None = None) -> DetectionResult:
     return local_detect(
         request.text if text is None else text,
-        genre,
         None,
         request.protected_terms,
     )
 
 
 def _audit_status(local_warnings: list[str], model_status: str, flagged_edits: list[FlaggedEdit]) -> str:
-    if any("50%" in warning or "누락" in warning or _is_strict_completion_warning(warning) for warning in local_warnings):
+    if any("누락" in warning or _is_strict_completion_warning(warning) for warning in local_warnings):
         return "fail"
     if any(edit.action == "rollback_required" for edit in flagged_edits):
         return "conditional_pass" if model_status == "full_pass" else model_status
@@ -479,6 +448,13 @@ def _audit_status(local_warnings: list[str], model_status: str, flagged_edits: l
     if local_warnings and model_status == "full_pass":
         return "conditional_pass"
     return model_status
+
+
+def _strict_preservation_warnings(original: str, revised: str, protected_terms: list[str]) -> list[str]:
+    missing = missing_preservation_terms(original, revised, protected_terms)
+    if not missing:
+        return []
+    return ["보존되어야 하는 표현이 결과에서 누락됐을 수 있습니다: " + ", ".join(missing[:10])]
 
 
 def _enrich_strict_rewrite_result(
@@ -513,7 +489,8 @@ def _enrich_strict_rewrite_result(
             "changeRate": rate,
             "findingsResolved": findings_resolved,
             "findingsUnresolved": findings_unresolved,
-            "overPolishWarning": strict_result.overPolishWarning or rate > 30,
+            "overPolishWarning": strict_result.overPolishWarning
+            or _strict_over_polish_requires_retry(over_polish_signals(request.text, strict_result.revisedText)),
             "edits": edits,
             "summary": summary,
         }
@@ -543,32 +520,6 @@ def _local_flagged_edits(
                     action="rollback_required",
                 )
             )
-        elif "50%" in warning:
-            flagged.append(
-                FlaggedEdit(
-                    issue=warning,
-                    checklistFailed=[7, 10, 13],
-                    action="rollback_required",
-                )
-            )
-        elif "30%" in warning:
-            flagged.append(
-                FlaggedEdit(
-                    issue=warning,
-                    checklistFailed=[13],
-                    action="warning",
-                )
-            )
-    if not flagged:
-        rate = change_rate(request.text, llm_result.revisedText)
-        if rate > 30:
-            flagged.append(
-                FlaggedEdit(
-                    issue=f"변경률이 {rate:.2f}%로 원본 strict 경고 기준을 넘었습니다.",
-                    checklistFailed=[13],
-                    action="warning",
-                )
-            )
     return flagged
 
 
@@ -582,6 +533,23 @@ def _merge_flagged_edits(local_edits: list[FlaggedEdit], model_edits: list[Flagg
         merged.append(edit)
         seen.add(key)
     return merged
+
+
+def _strict_over_polish_requires_retry(signals: list[str]) -> bool:
+    blockers = _strict_over_polish_blockers(signals)
+    return len(blockers) >= 2 or ("change_rate_over_50" in signals and bool(blockers))
+
+
+def _strict_over_polish_severity_count(signals: list[str]) -> int:
+    blockers = _strict_over_polish_blockers(signals)
+    if "change_rate_over_50" in signals and blockers:
+        return len(blockers) + 1
+    return len(blockers)
+
+
+def _strict_over_polish_blockers(signals: list[str]) -> list[str]:
+    rate_only = {"change_rate_over_30", "change_rate_over_50"}
+    return [signal for signal in signals if signal not in rate_only]
 
 
 def _combine_review(
@@ -600,7 +568,7 @@ def _combine_review(
         s1_count=s1_count,
         s2_count=s2_count,
         improvement=improvement,
-        over_polish_signal_count=len(signals),
+        over_polish_signal_count=_strict_over_polish_severity_count(signals),
     )
     warnings = list(model_review.warnings)
     if s1_count:
@@ -611,9 +579,9 @@ def _combine_review(
         warnings.append("과윤문 신호가 감지됐습니다: " + ", ".join(signals))
     if audit_result.status in {"fail", "conditional_pass"}:
         decision = "rollback_and_rewrite" if round_number < max_rounds else "hold_and_report"
-    elif len(signals) >= 2 and round_number < max_rounds:
+    elif _strict_over_polish_requires_retry(signals) and round_number < max_rounds:
         decision = "rollback_and_rewrite"
-    elif len(signals) >= 2:
+    elif _strict_over_polish_requires_retry(signals):
         decision = "hold_and_report"
     elif s1_count and round_number < max_rounds:
         decision = "rewrite_round_2"
@@ -662,7 +630,7 @@ def _local_review(
         s1_count=s1_count,
         s2_count=s2_count,
         improvement=improvement,
-        over_polish_signal_count=len(signals),
+        over_polish_signal_count=_strict_over_polish_severity_count(signals),
     )
     warnings: list[str] = []
     if s1_count:
@@ -674,12 +642,12 @@ def _local_review(
     if audit_result.status in {"fail", "conditional_pass"}:
         decision = "rollback_and_rewrite" if round_number < max_rounds else "hold_and_report"
         reason = "보존 감사 실패로 재윤문이 필요합니다."
-    elif len(signals) >= 2 and round_number < max_rounds:
+    elif _strict_over_polish_requires_retry(signals) and round_number < max_rounds:
         decision = "rollback_and_rewrite"
-        reason = "과윤문 신호가 2개 이상 감지돼 문제 edit 롤백 후 재윤문이 필요합니다."
-    elif len(signals) >= 2:
+        reason = "변경률 외 과윤문 신호가 함께 감지돼 문제 edit 롤백 후 재윤문이 필요합니다."
+    elif _strict_over_polish_requires_retry(signals):
         decision = "hold_and_report"
-        reason = "최대 라운드 후에도 과윤문 신호가 남았습니다."
+        reason = "최대 라운드 후에도 변경률 외 과윤문 신호가 남았습니다."
     elif s1_count and round_number < max_rounds:
         decision = "rewrite_round_2"
         reason = "잔존 S1 패턴이 있어 추가 윤문이 필요합니다."
