@@ -820,6 +820,68 @@ async def test_openrouter_fast_rewrite_uses_json_schema_and_usage(monkeypatch):
     assert calls[0]["response_format"]["type"] == "json_schema"
     assert calls[0]["response_format"]["json_schema"]["strict"] is True
     assert calls[0]["extra_body"]["provider"]["require_parameters"] is True
+    assert "temperature" not in calls[0]
+
+
+async def test_openrouter_strict_detect_omits_temperature_for_parameter_routing(monkeypatch):
+    calls = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps({"estimatedGenre": "report"}, ensure_ascii=False)
+                        )
+                    )
+                ],
+                usage=SimpleNamespace(prompt_tokens=5, completion_tokens=3),
+            )
+
+    class FakeChat:
+        def __init__(self):
+            self.completions = FakeCompletions()
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = FakeChat()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI),
+    )
+
+    llm = OpenRouterRewriteLLM(
+        api_key="or-key",
+        base_url="https://openrouter.ai/api/v1",
+        app_title="Test App",
+        site_url=None,
+        model_name="openai/gpt-5-mini",
+        fast_model_name="openai/gpt-5-mini",
+        fast_fallback_model_name="openai/gpt-5-mini",
+        strict_detect_model_name="openai/gpt-5-mini",
+        strict_rewrite_model_name="openai/gpt-5-mini",
+        strict_audit_model_name="openai/gpt-5-mini",
+        strict_review_model_name="openai/gpt-5-mini",
+        strict_escalation_model_name="openai/gpt-5-mini",
+    )
+
+    result = await llm.detect(
+        RewriteRequestForTest.model_validate(_payload(rewrite_mode="strict")),
+        genre_hint="report",
+        context={"estimatedGenre": "report", "metricsBefore": {}, "preservationTerms": []},
+    )
+
+    assert result.estimatedGenre == "report"
+    assert result.inputTokens == 5
+    assert result.outputTokens == 3
+    assert calls[0]["model"] == "openai/gpt-5-mini"
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[0]["extra_body"]["provider"]["require_parameters"] is True
+    assert "temperature" not in calls[0]
 
 
 def test_metrics_v2_computes_im_not_ai_signal_keys():

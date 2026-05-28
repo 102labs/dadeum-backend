@@ -166,7 +166,6 @@ class OpenRouterRewriteLLM:
             system=prompts.fast_system_prompt(),
             user=prompts.fast_user_prompt(request, genre_hint, context),
             max_tokens=5000,
-            temperature=0.2,
         )
 
     async def detect(
@@ -182,7 +181,6 @@ class OpenRouterRewriteLLM:
             system=prompts.detect_system_prompt(),
             user=prompts.detect_user_prompt(request, genre_hint, context),
             max_tokens=5000,
-            temperature=0.1,
         )
 
     async def rewrite_strict(
@@ -215,7 +213,6 @@ class OpenRouterRewriteLLM:
                 review_feedback=review_feedback,
             ),
             max_tokens=6000,
-            temperature=0.2,
         )
 
     async def audit(
@@ -233,7 +230,6 @@ class OpenRouterRewriteLLM:
             system=prompts.audit_system_prompt(),
             user=prompts.audit_user_prompt(request, genre_hint, context, revised_text, changes),
             max_tokens=3000,
-            temperature=0.0,
         )
 
     async def review(
@@ -259,7 +255,6 @@ class OpenRouterRewriteLLM:
                 audit_warnings,
             ),
             max_tokens=3000,
-            temperature=0.1,
         )
 
     async def _chat_structured(
@@ -271,7 +266,6 @@ class OpenRouterRewriteLLM:
         system: str,
         user: str,
         max_tokens: int,
-        temperature: float,
     ) -> TStructuredResult:
         from openai import AsyncOpenAI
 
@@ -288,15 +282,14 @@ class OpenRouterRewriteLLM:
         for model in models:
             try:
                 response = await client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    response_format=_openrouter_response_format(schema_name, result_type.model_json_schema()),
-                    extra_body={"provider": {"require_parameters": True}},
+                    **_openrouter_chat_kwargs(
+                        model=model,
+                        system=system,
+                        user=user,
+                        max_tokens=max_tokens,
+                        schema_name=schema_name,
+                        schema=result_type.model_json_schema(),
+                    )
                 )
                 content = _extract_chat_content(response)
                 result = result_type.model_validate_json(content)
@@ -370,6 +363,29 @@ def _openrouter_response_format(schema_name: str, schema: dict[str, Any]) -> dic
             "strict": True,
             "schema": schema,
         },
+    }
+
+
+def _openrouter_chat_kwargs(
+    *,
+    model: str,
+    system: str,
+    user: str,
+    max_tokens: int,
+    schema_name: str,
+    schema: dict[str, Any],
+) -> dict[str, Any]:
+    # With require_parameters=true, optional sampling controls can remove all
+    # eligible providers. Keep the OpenRouter structured request surface minimal.
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "max_tokens": max_tokens,
+        "response_format": _openrouter_response_format(schema_name, schema),
+        "extra_body": {"provider": {"require_parameters": True}},
     }
 
 
