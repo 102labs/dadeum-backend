@@ -233,7 +233,6 @@ class RewriteGraphRunner:
                 review_feedback,
                 use_escalation=use_escalation,
             )
-            strict_result = _repair_strict_rewrite_result(strict_result, request)
             strict_result = _enrich_strict_rewrite_result(strict_result, request, state["detection"])
             llm_result = LLMRewriteResult(
                 revisedText=strict_result.revisedText,
@@ -456,64 +455,6 @@ def _strict_preservation_warnings(original: str, revised: str, protected_terms: 
     if not missing:
         return []
     return ["보존되어야 하는 표현이 결과에서 누락됐을 수 있습니다: " + ", ".join(missing[:10])]
-
-
-def _repair_strict_rewrite_result(
-    strict_result: StrictRewriteResult,
-    request: RewriteRequest,
-) -> StrictRewriteResult:
-    replacement = _best_complete_revised_text_candidate(
-        request,
-        strict_result.revisedText,
-        [change.revised for change in strict_result.changes],
-    )
-    if replacement is None:
-        return strict_result
-    return strict_result.model_copy(
-        update={
-            "revisedText": replacement,
-            "summary": [
-                *strict_result.summary,
-                "Strict revisedText가 불완전해 changes.revised의 완성본 후보로 보정했습니다.",
-            ],
-        }
-    )
-
-
-def _best_complete_revised_text_candidate(
-    request: RewriteRequest,
-    revised_text: str,
-    candidates: list[str],
-) -> str | None:
-    current = revised_text.strip()
-    current_warnings = _strict_completion_warnings(request, current)
-    if not current_warnings:
-        return None
-
-    original_len = len(request.text.strip())
-    min_len = max(len(current) + 20, int(original_len * 0.65))
-    valid_candidates = [
-        candidate.strip()
-        for candidate in candidates
-        if _is_complete_revised_text_candidate(request, candidate.strip(), min_len)
-    ]
-    if not valid_candidates:
-        return None
-    return max(valid_candidates, key=len)
-
-
-def _is_complete_revised_text_candidate(
-    request: RewriteRequest,
-    candidate: str,
-    min_len: int,
-) -> bool:
-    if len(candidate) < min_len:
-        return False
-    if _strict_completion_warnings(request, candidate):
-        return False
-    if missing_preservation_terms(request.text, candidate, request.protected_terms):
-        return False
-    return True
 
 
 def _enrich_strict_rewrite_result(

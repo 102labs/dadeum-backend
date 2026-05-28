@@ -1139,7 +1139,7 @@ async def test_strict_hold_and_report_blocks_current_draft_without_audit_rollbac
     assert any("사람 검토" in warning for warning in response.warnings)
 
 
-async def test_strict_rewrite_repairs_incomplete_revised_text_from_complete_change_candidate():
+async def test_strict_rewrite_does_not_repair_incomplete_revised_text_from_change_candidate():
     audited_texts = []
     text = (
         "첫 번째는 소스 정리 기능입니다. 에이전트가 제가 저장해둔 모든 소스를 살펴보고, "
@@ -1201,10 +1201,10 @@ async def test_strict_rewrite_repairs_incomplete_revised_text_from_complete_chan
     )
     response = await RewriteGraphRunner(_settings(), InconsistentStrictLLM()).run(request)
 
-    assert audited_texts == [complete_revised]
-    assert response.revisedText == complete_revised
-    assert any("revisedText가 불완전" in item for item in response.summary)
-    assert not any("결과 노출을 차단" in warning for warning in response.warnings)
+    assert audited_texts == ["첫 번째는 소스 정리 기능입니다. 에이전트에게 "]
+    assert response.revisedText == request.text
+    assert not any("revisedText가 불완전" in item for item in response.summary)
+    assert any("결과 노출을 차단" in warning for warning in response.warnings)
 
 
 async def test_strict_falls_back_to_last_display_safe_round_when_final_round_is_truncated():
