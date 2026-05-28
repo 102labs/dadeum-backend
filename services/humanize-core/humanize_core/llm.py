@@ -1,3 +1,4 @@
+import copy
 import json
 from typing import Any, Protocol, TypeVar
 
@@ -361,9 +362,48 @@ def _openrouter_response_format(schema_name: str, schema: dict[str, Any]) -> dic
         "json_schema": {
             "name": schema_name,
             "strict": True,
-            "schema": schema,
+            "schema": _openrouter_strict_schema(schema),
         },
     }
+
+
+def _openrouter_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    strict_schema = copy.deepcopy(schema)
+    _normalize_openrouter_schema_node(strict_schema)
+    return strict_schema
+
+
+def _normalize_openrouter_schema_node(node: Any) -> None:
+    if isinstance(node, list):
+        for item in node:
+            _normalize_openrouter_schema_node(item)
+        return
+
+    if not isinstance(node, dict):
+        return
+
+    node.pop("default", None)
+    node.pop("title", None)
+
+    properties = node.get("properties")
+    if isinstance(properties, dict):
+        node["additionalProperties"] = False
+        node["required"] = list(properties.keys())
+        for child in properties.values():
+            _normalize_openrouter_schema_node(child)
+    elif node.get("type") == "object" and isinstance(node.get("additionalProperties"), dict):
+        node["additionalProperties"] = False
+        node["properties"] = {}
+        node["required"] = []
+
+    for key in ("$defs", "items", "anyOf", "allOf", "oneOf"):
+        child = node.get(key)
+        if child is not None:
+            if key == "$defs" and isinstance(child, dict):
+                for definition in child.values():
+                    _normalize_openrouter_schema_node(definition)
+            else:
+                _normalize_openrouter_schema_node(child)
 
 
 def _openrouter_chat_kwargs(

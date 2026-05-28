@@ -31,7 +31,13 @@ from humanize_core.im_not_ai.schemas import (
     NaturalnessReviewResult,
     StrictRewriteResult,
 )
-from humanize_core.llm import OpenAIRewriteLLM, OpenRouterRewriteLLM, StubRewriteLLM, _openai_rewrite_text_format
+from humanize_core.llm import (
+    OpenAIRewriteLLM,
+    OpenRouterRewriteLLM,
+    StubRewriteLLM,
+    _openai_rewrite_text_format,
+    _openrouter_response_format,
+)
 from humanize_core.schemas import Change
 from humanize_core.schemas import RewriteRequest as RewriteRequestForTest
 
@@ -882,6 +888,37 @@ async def test_openrouter_strict_detect_omits_temperature_for_parameter_routing(
     assert calls[0]["response_format"]["type"] == "json_schema"
     assert calls[0]["extra_body"]["provider"]["require_parameters"] is True
     assert "temperature" not in calls[0]
+
+
+def test_openrouter_schema_marks_pydantic_default_fields_required():
+    response_format = _openrouter_response_format(
+        "detection_result",
+        DetectionResult.model_json_schema(),
+    )
+
+    schema = response_format["json_schema"]["schema"]
+    assert schema["required"] == list(schema["properties"].keys())
+    assert "default" not in json.dumps(schema)
+    assert "title" not in json.dumps(schema)
+
+    finding_schema = schema["$defs"]["Finding"]
+    assert finding_schema["required"] == list(finding_schema["properties"].keys())
+    assert "textSpan" in finding_schema["required"]
+    assert "start" in finding_schema["required"]
+    assert "end" in finding_schema["required"]
+
+    assert schema["properties"]["sentenceLengthStats"] == {
+        "additionalProperties": False,
+        "properties": {},
+        "required": [],
+        "type": "object",
+    }
+    assert schema["properties"]["categorySummary"] == {
+        "additionalProperties": False,
+        "properties": {},
+        "required": [],
+        "type": "object",
+    }
 
 
 def test_metrics_v2_computes_im_not_ai_signal_keys():
