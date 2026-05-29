@@ -21,7 +21,7 @@ class RewriteRequest(BaseModel):
 
     text: str = Field(min_length=1)
     user_intent: str = ""
-    rewrite_mode: RewriteMode = "fast"
+    rewrite_mode: RewriteMode = "strict"
     tone: Tone = "keep"
     protected_terms: list[str] = Field(default_factory=list)
     max_rounds: int = Field(default=1, ge=1, le=3)

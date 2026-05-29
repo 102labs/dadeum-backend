@@ -12,9 +12,5 @@ def load_resource(name: str) -> str:
     return (_RESOURCE_DIR / name).read_text(encoding="utf-8")
 
 
-def quick_rules() -> str:
-    return load_resource("quick-rules.md")
-
-
 def strict_rules() -> str:
-    return load_resource("stric-rules.md")
+    return load_resource("strict-rules.md")

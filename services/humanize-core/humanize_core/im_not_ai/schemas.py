@@ -56,7 +56,7 @@ class DetectionResult(BaseModel):
     outputTokens: int = 0
 
 
-class FastRewriteResult(BaseModel):
+class RewriteResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     revisedText: str
@@ -68,37 +68,6 @@ class FastRewriteResult(BaseModel):
     qualityLevel: str = ""
     changeRate: float = 0.0
     rollbackRequired: bool = False
-    inputTokens: int = 0
-    outputTokens: int = 0
-
-
-class RewriteEdit(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    findingId: str = ""
-    before: str
-    after: str
-    category: str = ""
-    reason: str
-    action: str = ""
-    changeRate: float = 0.0
-
-
-class StrictRewriteResult(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    revisedText: str
-    changes: list[Change]
-    summary: list[str]
-    appliedFindingIds: list[str] = Field(default_factory=list)
-    unresolvedFindingIds: list[str] = Field(default_factory=list)
-    charCountBefore: int = 0
-    charCountAfter: int = 0
-    changeRate: float = 0.0
-    findingsResolved: list[str] = Field(default_factory=list)
-    findingsUnresolved: list[str] = Field(default_factory=list)
-    overPolishWarning: bool = False
-    edits: list[RewriteEdit] = Field(default_factory=list)
     inputTokens: int = 0
     outputTokens: int = 0
 

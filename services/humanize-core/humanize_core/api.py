@@ -27,13 +27,10 @@ def create_app(settings: Settings | None = None, graph_runner: RewriteGraphRunne
             openrouter_base_url=runtime_settings.openrouter_base_url,
             openrouter_app_title=runtime_settings.openrouter_app_title,
             openrouter_site_url=runtime_settings.openrouter_site_url,
-            fast_model_name=runtime_settings.fast_model_name,
-            fast_fallback_model_name=runtime_settings.fast_fallback_model_name,
-            strict_detect_model_name=runtime_settings.strict_detect_model_name,
-            strict_rewrite_model_name=runtime_settings.strict_rewrite_model_name,
+            rewrite_model_name=runtime_settings.rewrite_model_name,
+            rewrite_fallback_model_name=runtime_settings.rewrite_fallback_model_name,
             strict_audit_model_name=runtime_settings.strict_audit_model_name,
             strict_review_model_name=runtime_settings.strict_review_model_name,
-            strict_escalation_model_name=runtime_settings.strict_escalation_model_name,
         )
         graph_runner = RewriteGraphRunner(runtime_settings, llm)
 

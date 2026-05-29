@@ -45,7 +45,7 @@ The Next.js server signs and forwards the Core payload with internal fields:
 {
   "text": "윤문할 원문",
   "user_intent": "",
-  "rewrite_mode": "fast",
+  "rewrite_mode": "strict",
   "tone": "keep",
   "protected_terms": [],
   "max_rounds": 1,
@@ -54,10 +54,10 @@ The Next.js server signs and forwards the Core payload with internal fields:
 ```
 
 Core infers internal genre hints from the text itself. The rewrite logic uses
-`user_intent`, `rewrite_mode`, `tone`, and `preserve_formatting` to choose the
-rewrite strength, tone policy, and formatting policy. `protected_terms` and
-`max_rounds` are accepted for request compatibility but are not used by the
-current rewrite pipeline. Strict mode always runs one fixed multi-stage routine.
+`user_intent`, `tone`, `protected_terms`, and `preserve_formatting` to choose
+the rewrite direction, preservation policy, and formatting policy.
+`rewrite_mode` and `max_rounds` are accepted only for request compatibility; Core
+now runs the same strict-only routine for every request.
 
 ## Local Run
 
@@ -74,31 +74,32 @@ For local tests, the default `stub` provider avoids external LLM calls. Producti
 ```text
 HUMANIZE_MODEL_PROVIDER=openrouter
 OPENROUTER_API_KEY=...
-HUMANIZE_FAST_MODEL_NAME=openai/gpt-5-mini
-HUMANIZE_FAST_FALLBACK_MODEL_NAME=~anthropic/claude-haiku-latest
-HUMANIZE_STRICT_DETECT_MODEL_NAME=openai/gpt-5.4-mini
-HUMANIZE_STRICT_REWRITE_MODEL_NAME=~anthropic/claude-sonnet-latest
+HUMANIZE_REWRITE_MODEL_NAME=openai/gpt-5-mini
+HUMANIZE_REWRITE_FALLBACK_MODEL_NAME=~anthropic/claude-haiku-latest
 HUMANIZE_STRICT_AUDIT_MODEL_NAME=~anthropic/claude-haiku-latest
 HUMANIZE_STRICT_REVIEW_MODEL_NAME=openai/gpt-5.4-mini
-HUMANIZE_STRICT_ESCALATION_MODEL_NAME=~anthropic/claude-sonnet-latest
 ```
 
-`rewrite_mode` defaults to `fast`. Fast mode ports the `docs/im-not-ai` monolith path by combining `quick-rules.md`, `metrics_v2.py`, and a single structured rewrite call. `strict` mode runs a LangGraph path:
+`rewrite_mode` defaults to `strict`, and fast/strict branching has been removed.
+The graph path is:
 
 ```text
-prepare -> detect -> rewrite -> audit -> review -> finalize
+prepare -> rewrite -> audit -> review? -> finalize
 ```
 
-Strict mode does not loop. The `review` stage applies the first audit feedback,
-checks residual AI-tell patterns, performs one conservative correction pass, and
-the graph re-runs the strict audit before `finalize`.
+`rewrite` performs one full-pass rewrite using `strict-rules.md`. `audit`
+compares the draft to the original and flags only harmful preservation problems:
+changed facts, numbers, dates, units, names, quotations, protected terms, order,
+polarity, causality, omitted content, or added claims. If audit has no repair
+items, the graph finalizes immediately. If audit finds a repair item, `review`
+applies only those corrections and returns the final candidate.
 
 The OpenAI provider uses the Responses API with strict JSON Schema structured
 output for `revisedText`, `changes`, and `summary`. Usage metrics come from the
 provider response metadata, not from model-generated JSON.
 
 The OpenRouter provider uses Chat Completions with `response_format:
-json_schema` for Fast and every Strict node. It sets provider routing to require
+json_schema` for rewrite, audit, and review. It sets provider routing to require
 models that support the requested structured-output parameters.
 
 ## Privacy Boundary

@@ -1,9 +1,8 @@
 """Humanize KR v1.6 quantitative metrics calculator.
 
-External pre-processor for the monolith fast path. Run BEFORE the monolith
-agent — its output (prepended to the input text) gives the LLM a numerical
-baseline read so it does not waste tool-call budget computing comma rates
-or counting hanja suffixes.
+Legacy quantitative metrics used by metrics_v2 and local style-signal tests.
+The active rewrite graph does not run this as a separate stage; rewrite/audit
+prompts rely on structured model calls and preservation checks instead.
 
 Hard rule: standard library ONLY (json/re/math/collections/os/sys/argparse).
 No konlpy/bareun/mecab/spaCy. We approximate morphological analysis with

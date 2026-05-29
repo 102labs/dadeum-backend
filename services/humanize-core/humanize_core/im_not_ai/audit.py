@@ -16,7 +16,7 @@ _EMOJI_RE = re.compile(r"[\U0001F300-\U0001FAFF]")
 
 
 SEVERITY_WEIGHTS = {"S1": 5.0, "S2": 2.0, "S3": 0.5}
-SUPPORTED_QUICK_RULE_IDS = frozenset(
+SUPPORTED_STYLE_RULE_IDS = frozenset(
     {
         "A-1",
         "A-2",
@@ -175,7 +175,7 @@ def local_detect(
                     textSpan=span,
                     start=match.start(),
                     end=match.end(),
-                    reason=f"{rule_id} quick-rule 후보가 감지됐습니다.",
+                    reason=f"{rule_id} style-rule 후보가 감지됐습니다.",
                     suggestedFix=fix,
                 )
             )
@@ -487,7 +487,7 @@ def quality_grade(
         return "A", "S1 0건, S2 2건 이하, 변경률 10~25%, 자체검증 전 항목 통과입니다."
     if s2_count <= 4 and passed >= max(len(checks) - 1, 0):
         return "B", "S1 0건, S2 4건 이하, 자체검증 대부분 통과입니다."
-    return "C", "S2 잔존 또는 자체검증 결과가 Fast 기준 경계값을 넘었습니다."
+    return "C", "S2 잔존 또는 자체검증 결과가 rewrite 기준 경계값을 넘었습니다."
 
 
 def over_polish_signals(original: str, revised: str) -> list[str]:

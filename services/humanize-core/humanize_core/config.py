@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,18 +18,13 @@ class Settings(BaseSettings):
     openrouter_app_title: str = Field(default="Dadeum Humanize Core", alias="OPENROUTER_APP_TITLE")
     model_provider: str = Field(default="stub", alias="HUMANIZE_MODEL_PROVIDER")
     model_name: str = Field(default="stub", alias="HUMANIZE_MODEL_NAME")
-    fast_model_name: str = Field(default="openai/gpt-5-mini", alias="HUMANIZE_FAST_MODEL_NAME")
-    fast_fallback_model_name: str = Field(
+    rewrite_model_name: str = Field(
+        default="openai/gpt-5-mini",
+        validation_alias=AliasChoices("HUMANIZE_REWRITE_MODEL_NAME", "HUMANIZE_FAST_MODEL_NAME"),
+    )
+    rewrite_fallback_model_name: str = Field(
         default="~anthropic/claude-haiku-latest",
-        alias="HUMANIZE_FAST_FALLBACK_MODEL_NAME",
-    )
-    strict_detect_model_name: str = Field(
-        default="openai/gpt-5.4-mini",
-        alias="HUMANIZE_STRICT_DETECT_MODEL_NAME",
-    )
-    strict_rewrite_model_name: str = Field(
-        default="~anthropic/claude-sonnet-latest",
-        alias="HUMANIZE_STRICT_REWRITE_MODEL_NAME",
+        validation_alias=AliasChoices("HUMANIZE_REWRITE_FALLBACK_MODEL_NAME", "HUMANIZE_FAST_FALLBACK_MODEL_NAME"),
     )
     strict_audit_model_name: str = Field(
         default="~anthropic/claude-haiku-latest",
@@ -38,10 +33,6 @@ class Settings(BaseSettings):
     strict_review_model_name: str = Field(
         default="openai/gpt-5.4-mini",
         alias="HUMANIZE_STRICT_REVIEW_MODEL_NAME",
-    )
-    strict_escalation_model_name: str = Field(
-        default="~anthropic/claude-sonnet-latest",
-        alias="HUMANIZE_STRICT_ESCALATION_MODEL_NAME",
     )
     core_api_key: str = Field(default="", alias="HUMANIZE_CORE_API_KEY")
     signing_secret: str = Field(default="", alias="HUMANIZE_CORE_SIGNING_SECRET")

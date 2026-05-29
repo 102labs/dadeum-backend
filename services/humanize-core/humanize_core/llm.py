@@ -6,11 +6,9 @@ from humanize_core.diff import build_fallback_changes, squeeze_spaces
 from humanize_core.im_not_ai import prompts
 from humanize_core.im_not_ai.schemas import (
     AuditResult,
-    DetectionResult,
-    FastRewriteResult,
+    RewriteResult,
     HumanizeContext,
     StrictReviewResult,
-    StrictRewriteResult,
 )
 from humanize_core.schemas import LLMRewriteResult, RewriteRequest
 
@@ -60,8 +58,8 @@ class OpenAIRewriteLLM:
         client = AsyncOpenAI(api_key=self.api_key)
         response = await client.responses.create(
             model=self.model_name,
-            instructions=_system_prompt(),
-            input=_user_prompt(request),
+            instructions=prompts.rewrite_system_prompt(),
+            input=prompts.rewrite_user_prompt(request, HumanizeContext().model_dump()),
             text={"format": _openai_rewrite_text_format()},
         )
         content = _extract_openai_output_text(response)
@@ -88,8 +86,8 @@ class AnthropicRewriteLLM:
             model=self.model_name,
             max_tokens=4096,
             temperature=0.2,
-            system=_system_prompt(),
-            messages=[{"role": "user", "content": _user_prompt(request)}],
+            system=prompts.rewrite_system_prompt(),
+            messages=[{"role": "user", "content": prompts.rewrite_user_prompt(request, HumanizeContext().model_dump())}],
         )
         content = "".join(
             block.text for block in response.content if getattr(block, "type", "") == "text"
@@ -102,9 +100,7 @@ class AnthropicRewriteLLM:
 
 TStructuredResult = TypeVar(
     "TStructuredResult",
-    FastRewriteResult,
-    DetectionResult,
-    StrictRewriteResult,
+    RewriteResult,
     AuditResult,
     StrictReviewResult,
 )
@@ -119,13 +115,10 @@ class OpenRouterRewriteLLM:
         app_title: str,
         site_url: str | None,
         model_name: str,
-        fast_model_name: str,
-        fast_fallback_model_name: str,
-        strict_detect_model_name: str,
-        strict_rewrite_model_name: str,
+        rewrite_model_name: str,
+        rewrite_fallback_model_name: str,
         strict_audit_model_name: str,
         strict_review_model_name: str,
-        strict_escalation_model_name: str,
     ) -> None:
         if not api_key:
             raise LLMConfigurationError("OPENROUTER_API_KEY is required for OpenRouter provider")
@@ -133,71 +126,36 @@ class OpenRouterRewriteLLM:
         self.base_url = base_url.rstrip("/")
         self.app_title = app_title
         self.site_url = site_url
-        primary_model = model_name if model_name and model_name != "stub" else fast_model_name
-        self.fast_models = _dedupe_models([primary_model, fast_fallback_model_name])
-        self.detect_models = _dedupe_models([strict_detect_model_name, primary_model])
-        self.rewrite_models = _dedupe_models([strict_rewrite_model_name, primary_model, strict_escalation_model_name])
+        primary_model = model_name if model_name and model_name != "stub" else rewrite_model_name
+        self.rewrite_models = _dedupe_models([primary_model, rewrite_fallback_model_name])
         self.audit_models = _dedupe_models([strict_audit_model_name, primary_model])
         self.review_models = _dedupe_models([strict_review_model_name, primary_model])
 
     async def rewrite(self, request: RewriteRequest) -> LLMRewriteResult:
-        fast_result = await self.rewrite_fast(
+        rewrite_result = await self.rewrite_once(
             request,
             HumanizeContext().model_dump(),
         )
         return LLMRewriteResult(
-            revisedText=fast_result.revisedText,
-            changes=fast_result.changes,
-            summary=fast_result.summary,
-            inputTokens=fast_result.inputTokens,
-            outputTokens=fast_result.outputTokens,
+            revisedText=rewrite_result.revisedText,
+            changes=rewrite_result.changes,
+            summary=rewrite_result.summary,
+            inputTokens=rewrite_result.inputTokens,
+            outputTokens=rewrite_result.outputTokens,
         )
 
-    async def rewrite_fast(
+    async def rewrite_once(
         self,
         request: RewriteRequest,
         context: dict[str, Any],
-    ) -> FastRewriteResult:
-        return await self._chat_structured(
-            models=self.fast_models,
-            schema_name="fast_rewrite_result",
-            result_type=FastRewriteResult,
-            system=prompts.fast_system_prompt(),
-            user=prompts.fast_user_prompt(request, context),
-            max_tokens=5000,
-        )
-
-    async def detect(
-        self,
-        request: RewriteRequest,
-        context: dict[str, Any],
-    ) -> DetectionResult:
-        return await self._chat_structured(
-            models=self.detect_models,
-            schema_name="detection_result",
-            result_type=DetectionResult,
-            system=prompts.detect_system_prompt(),
-            user=prompts.detect_user_prompt(request, context),
-            max_tokens=5000,
-        )
-
-    async def rewrite_strict(
-        self,
-        request: RewriteRequest,
-        context: dict[str, Any],
-        detection: DetectionResult,
-    ) -> StrictRewriteResult:
+    ) -> RewriteResult:
         return await self._chat_structured(
             models=self.rewrite_models,
-            schema_name="strict_rewrite_result",
-            result_type=StrictRewriteResult,
-            system=prompts.strict_rewrite_system_prompt(),
-            user=prompts.strict_rewrite_user_prompt(
-                request,
-                context,
-                detection,
-            ),
-            max_tokens=6000,
+            schema_name="rewrite_result",
+            result_type=RewriteResult,
+            system=prompts.rewrite_system_prompt(),
+            user=prompts.rewrite_user_prompt(request, context),
+            max_tokens=5000,
         )
 
     async def audit(
@@ -220,10 +178,8 @@ class OpenRouterRewriteLLM:
         self,
         request: RewriteRequest,
         context: dict[str, Any],
-        detection: DetectionResult,
         revised_text: str,
         audit_result: AuditResult,
-        residual_detection: DetectionResult,
     ) -> StrictReviewResult:
         return await self._chat_structured(
             models=self.review_models,
@@ -233,10 +189,8 @@ class OpenRouterRewriteLLM:
             user=prompts.review_user_prompt(
                 request,
                 context,
-                detection,
                 revised_text,
                 audit_result,
-                residual_detection,
             ),
             max_tokens=6000,
         )
@@ -296,13 +250,10 @@ def create_llm(
     openrouter_base_url: str = "https://openrouter.ai/api/v1",
     openrouter_app_title: str = "Dadeum Humanize Core",
     openrouter_site_url: str | None = None,
-    fast_model_name: str = "openai/gpt-5-mini",
-    fast_fallback_model_name: str = "~anthropic/claude-haiku-latest",
-    strict_detect_model_name: str = "openai/gpt-5-mini",
-    strict_rewrite_model_name: str = "~anthropic/claude-sonnet-latest",
+    rewrite_model_name: str = "openai/gpt-5-mini",
+    rewrite_fallback_model_name: str = "~anthropic/claude-haiku-latest",
     strict_audit_model_name: str = "openai/gpt-5",
     strict_review_model_name: str = "~anthropic/claude-haiku-latest",
-    strict_escalation_model_name: str = "~anthropic/claude-opus-latest",
 ) -> RewriteLLM:
     normalized = provider.lower().strip()
     if normalized == "stub":
@@ -318,13 +269,10 @@ def create_llm(
             app_title=openrouter_app_title,
             site_url=openrouter_site_url,
             model_name=model_name,
-            fast_model_name=fast_model_name,
-            fast_fallback_model_name=fast_fallback_model_name,
-            strict_detect_model_name=strict_detect_model_name,
-            strict_rewrite_model_name=strict_rewrite_model_name,
+            rewrite_model_name=rewrite_model_name,
+            rewrite_fallback_model_name=rewrite_fallback_model_name,
             strict_audit_model_name=strict_audit_model_name,
             strict_review_model_name=strict_review_model_name,
-            strict_escalation_model_name=strict_escalation_model_name,
         )
     raise LLMConfigurationError(f"Unsupported HUMANIZE_MODEL_PROVIDER: {provider}")
 
@@ -478,7 +426,6 @@ def _soften_stub_tone(text: str) -> str:
 
 
 def _stub_summary(request: RewriteRequest) -> str:
-    mode = "정밀 검토" if request.rewrite_mode == "strict" else "빠른 윤문"
     tone = {
         "keep": "기존 톤",
         "formal": "격식 있는 톤",
@@ -486,7 +433,7 @@ def _stub_summary(request: RewriteRequest) -> str:
     }[request.tone]
     intent = " 사용자 요청 방향을 반영했습니다." if request.user_intent.strip() else ""
     formatting = "형식을 보존했습니다." if request.preserve_formatting else "필요한 공백을 정리했습니다."
-    return f"{mode} 기준으로 {tone}을 적용했습니다.{intent} {formatting}"
+    return f"단일 strict 기준으로 {tone}을 적용했습니다.{intent} {formatting}"
 
 
 def _openai_rewrite_text_format() -> dict[str, Any]:
