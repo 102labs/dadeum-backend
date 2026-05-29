@@ -5,14 +5,11 @@ from typing import Any, Protocol, TypeVar
 from humanize_core.diff import build_fallback_changes, squeeze_spaces
 from humanize_core.im_not_ai import prompts
 from humanize_core.im_not_ai.schemas import (
-    AuditLLMResult,
     AuditResult,
     DetectionResult,
     FastRewriteResult,
     HumanizeContext,
-    StrictReviewLLMResult,
     StrictReviewResult,
-    StrictRewriteLLMResult,
     StrictRewriteResult,
 )
 from humanize_core.schemas import LLMRewriteResult, RewriteRequest
@@ -107,11 +104,8 @@ TStructuredResult = TypeVar(
     "TStructuredResult",
     FastRewriteResult,
     DetectionResult,
-    StrictRewriteLLMResult,
     StrictRewriteResult,
-    AuditLLMResult,
     AuditResult,
-    StrictReviewLLMResult,
     StrictReviewResult,
 )
 
@@ -193,10 +187,10 @@ class OpenRouterRewriteLLM:
         context: dict[str, Any],
         detection: DetectionResult,
     ) -> StrictRewriteResult:
-        result: StrictRewriteLLMResult = await self._chat_structured(
+        return await self._chat_structured(
             models=self.rewrite_models,
             schema_name="strict_rewrite_result",
-            result_type=StrictRewriteLLMResult,
+            result_type=StrictRewriteResult,
             system=prompts.strict_rewrite_system_prompt(),
             user=prompts.strict_rewrite_user_prompt(
                 request,
@@ -204,15 +198,6 @@ class OpenRouterRewriteLLM:
                 detection,
             ),
             max_tokens=6000,
-        )
-        return StrictRewriteResult(
-            revisedText=result.revisedText,
-            changes=result.changes,
-            summary=result.summary,
-            appliedFindingIds=result.appliedFindingIds,
-            unresolvedFindingIds=result.unresolvedFindingIds,
-            inputTokens=getattr(result, "inputTokens", 0),
-            outputTokens=getattr(result, "outputTokens", 0),
         )
 
     async def audit(
@@ -222,21 +207,13 @@ class OpenRouterRewriteLLM:
         revised_text: str,
         changes: list[dict[str, Any]],
     ) -> AuditResult:
-        result: AuditLLMResult = await self._chat_structured(
+        return await self._chat_structured(
             models=self.audit_models,
             schema_name="audit_result",
-            result_type=AuditLLMResult,
+            result_type=AuditResult,
             system=prompts.audit_system_prompt(),
             user=prompts.audit_user_prompt(request, context, revised_text, changes),
             max_tokens=3000,
-        )
-        return AuditResult(
-            status=result.status,
-            warnings=result.warnings,
-            flaggedEdits=result.flaggedEdits,
-            reason=result.reason,
-            inputTokens=getattr(result, "inputTokens", 0),
-            outputTokens=getattr(result, "outputTokens", 0),
         )
 
     async def review(
@@ -248,10 +225,10 @@ class OpenRouterRewriteLLM:
         audit_result: AuditResult,
         residual_detection: DetectionResult,
     ) -> StrictReviewResult:
-        result: StrictReviewLLMResult = await self._chat_structured(
+        return await self._chat_structured(
             models=self.review_models,
             schema_name="strict_review_result",
-            result_type=StrictReviewLLMResult,
+            result_type=StrictReviewResult,
             system=prompts.review_system_prompt(),
             user=prompts.review_user_prompt(
                 request,
@@ -262,15 +239,6 @@ class OpenRouterRewriteLLM:
                 residual_detection,
             ),
             max_tokens=6000,
-        )
-        return StrictReviewResult(
-            revisedText=result.revisedText,
-            changes=result.changes,
-            summary=result.summary,
-            warnings=result.warnings,
-            finalBlockingIssues=result.finalBlockingIssues,
-            inputTokens=getattr(result, "inputTokens", 0),
-            outputTokens=getattr(result, "outputTokens", 0),
         )
 
     async def _chat_structured(

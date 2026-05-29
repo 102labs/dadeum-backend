@@ -45,6 +45,7 @@ async def _run_probe(args: argparse.Namespace, text: str) -> dict[str, Any]:
         rewrite_mode="strict",
         tone=args.tone,
         protected_terms=args.protected_term,
+        max_rounds=args.max_rounds,
         preserve_formatting=not args.no_preserve_formatting,
     )
     llm = create_llm(
@@ -86,6 +87,7 @@ async def _run_probe(args: argparse.Namespace, text: str) -> dict[str, Any]:
         "round": state["round"],
         "input": {
             "charCount": len(request.text),
+            "ignoredMaxRounds": request.max_rounds,
             "tone": request.tone,
             "preserveFormatting": request.preserve_formatting,
             "ignoredProtectedTerms": request.protected_terms,
@@ -120,6 +122,13 @@ def _parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="Compatibility input only; strict mode no longer uses protected terms.",
+    )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        choices=[1, 2, 3],
+        default=1,
+        help="Compatibility input only; strict mode always runs one routine.",
     )
     parser.add_argument(
         "--no-preserve-formatting",

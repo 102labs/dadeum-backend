@@ -25,14 +25,11 @@ from humanize_core.im_not_ai.metrics_v2 import (
     pronoun_density,
 )
 from humanize_core.im_not_ai.schemas import (
-    AuditLLMResult,
     AuditResult,
     DetectionResult,
     FastRewriteResult,
     Finding,
-    StrictReviewLLMResult,
     StrictReviewResult,
-    StrictRewriteLLMResult,
     StrictRewriteResult,
 )
 from humanize_core.llm import (
@@ -254,7 +251,7 @@ def test_stub_rewrite_reflects_user_selected_controls():
 
 async def test_long_fast_request_stays_on_fast_path():
     text = "보고 문장입니다. " * 801
-    request = RewriteRequestForTest.model_validate(_payload(text=text, rewrite_mode="fast"))
+    request = RewriteRequestForTest.model_validate(_payload(text=text, rewrite_mode="fast", max_rounds=3))
 
     class CapturingFastLLM:
         def __init__(self) -> None:
@@ -302,10 +299,10 @@ def test_valid_strict_request_uses_structured_response():
     assert data["usage"]["rounds"] >= 1
 
 
-def test_strict_request_runs_single_routine():
+def test_strict_request_ignores_max_rounds_and_runs_single_routine():
     client = _client()
     text = "결론적으로 성과를 냈습니다. 따라서 개선됩니다. 이를 통해 정리합니다. 그러므로 유지합니다."
-    raw_body = json.dumps(_payload(text=text, rewrite_mode="strict"), ensure_ascii=False).encode("utf-8")
+    raw_body = json.dumps(_payload(text=text, rewrite_mode="strict", max_rounds=3), ensure_ascii=False).encode("utf-8")
     headers = _signed_headers(raw_body)
 
     response = client.post("/v1/rewrite", content=raw_body, headers=headers)
@@ -313,6 +310,23 @@ def test_strict_request_runs_single_routine():
     assert response.status_code == 200
     data = response.json()
     assert data["usage"]["rounds"] == 1
+    assert not any("최대 라운드" in warning for warning in data["warnings"])
+
+
+def test_strict_request_defaults_to_single_round_when_max_rounds_omitted():
+    client = _client()
+    text = "결론적으로 성과를 냈습니다. 따라서 개선됩니다. 이를 통해 정리합니다. 그러므로 유지합니다."
+    body = _payload(text=text, rewrite_mode="strict")
+    body.pop("max_rounds")
+    raw_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    headers = _signed_headers(raw_body)
+
+    response = client.post("/v1/rewrite", content=raw_body, headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["usage"]["rounds"] == 1
+    assert not any("최대 라운드" in warning for warning in data["warnings"])
 
 
 def test_prompts_pass_user_selected_rewrite_controls():
@@ -321,6 +335,7 @@ def test_prompts_pass_user_selected_rewrite_controls():
             user_intent="문장을 더 부드럽게 다듬어 주세요.",
             rewrite_mode="strict",
             tone="friendly",
+            max_rounds=3,
             preserve_formatting=True,
         )
     )
@@ -341,6 +356,7 @@ def test_prompts_pass_user_selected_rewrite_controls():
     assert "우선 반영" in payload["rewrite_guidance"]["user_intent"]
     assert "친근" in payload["rewrite_guidance"]["tone"]
     assert "protected_terms" not in payload["rewrite_guidance"]
+    assert "max_rounds" not in payload["rewrite_guidance"]
     assert "줄바꿈" in payload["rewrite_guidance"]["formatting"]
 
 
@@ -385,6 +401,7 @@ def test_strict_rewrite_prompt_targets_advanced_quality_not_finding_only():
         _payload(
             text="이 기능은 데이터를 통해 성장을 지원합니다. 전략적 실행성과 구조화가 필요합니다.",
             rewrite_mode="strict",
+            max_rounds=2,
         )
     )
     detection = _strict_prompt_detection()
@@ -428,7 +445,7 @@ def test_strict_rewrite_prompt_targets_advanced_quality_not_finding_only():
     assert "변경률은 품질 목표가 아니라" in payload["rewrite_guidance"]["rewrite_mode"]
 
 
-def test_review_prompt_applies_compact_audit_corrections():
+def test_review_prompt_applies_audit_corrections_and_reaudits():
     request = RewriteRequestForTest.model_validate(
         _payload(
             text="이 기능은 데이터를 통해 성장을 지원합니다.",
@@ -465,28 +482,9 @@ def test_review_prompt_applies_compact_audit_corrections():
 
     rendered = json.dumps(payload, ensure_ascii=False)
     assert "strict_audit" in payload
-    assert payload["strict_audit"] == {
-        "status": "conditional_pass",
-        "reason": "수정 지시가 있습니다.",
-        "warnings": [],
-        "flaggedEdits": [
-            {
-                "findingId": "",
-                "before": "데이터를 통해",
-                "after": "데이터로",
-                "issue": "번역투 연결입니다.",
-                "checklistFailed": [13],
-                "action": "rewrite_required",
-                "correctionDirection": "'통해'를 자연스러운 조사로 줄입니다.",
-                "severity": "medium",
-            }
-        ],
-    }
     assert "fixed_review_routine" in payload
-    assert "editsPassed" not in rendered
-    assert "rollbackRequired" not in rendered
     assert "다시 점검" in rendered
-    assert "finalBlockingIssues" in rendered
+    assert "finalAuditStatus" in rendered
 
 
 def test_strict_detect_prompt_uses_compact_stric_rules_only_in_detect():
@@ -524,6 +522,7 @@ def test_strict_rewrite_and_review_prompts_stay_compact():
                 "사용자가 직접 피드를 스크롤하지 않아도 필요한 자료를 찾아 작은 묶음으로 반환합니다."
             ),
             rewrite_mode="strict",
+            max_rounds=2,
         )
     )
     context = {}
@@ -543,6 +542,7 @@ def test_strict_audit_prompt_does_not_embed_scholarship_reference():
         _payload(
             text="AI 에이전트가 저장된 자료를 정리하고 필요한 자료를 찾아줍니다.",
             rewrite_mode="strict",
+            max_rounds=2,
         )
     )
     context = {}
@@ -833,6 +833,7 @@ async def test_strict_change_rate_alone_is_review_signal_not_rollback():
         _payload(
             text="가나 다라 마바 사아 자차 카타 파하 하파 타카 차자 아사 바마 라다 나가.",
             rewrite_mode="strict",
+            max_rounds=2,
             protected_terms=[],
         )
     )
@@ -900,13 +901,13 @@ async def test_strict_graph_calls_detect_rewrite_audit_review_nodes():
         )
     )
 
-    assert calls == ["detect", "rewrite", "audit", "review"]
+    assert calls == ["detect", "rewrite", "audit", "review", "audit"]
     assert response.usage.rounds == 1
-    assert response.usage.inputTokens == 16
-    assert response.usage.outputTokens == 20
+    assert response.usage.inputTokens == 21
+    assert response.usage.outputTokens == 26
 
 
-async def test_strict_conditional_audit_is_handled_by_review_pass():
+async def test_strict_conditional_audit_is_handled_by_review_without_rewrite_loop():
     calls = []
     audit_calls = 0
 
@@ -953,7 +954,7 @@ async def test_strict_conditional_audit_is_handled_by_review_pass():
     runner = RewriteGraphRunner(_settings(), ConditionalAuditLLM())
     response = await runner.run(
         RewriteRequestForTest.model_validate(
-            _payload(text="2026년 보고서입니다.", rewrite_mode="strict")
+            _payload(text="2026년 보고서입니다.", rewrite_mode="strict", max_rounds=2)
         )
     )
 
@@ -962,7 +963,7 @@ async def test_strict_conditional_audit_is_handled_by_review_pass():
     assert response.revisedText == "2026년 보고서입니다."
 
 
-async def test_strict_blocks_truncated_final_draft_after_review():
+async def test_strict_blocks_truncated_final_draft_without_retry_loop():
     text = (
         "첫 번째는 소스 정리 기능입니다. 에이전트가 저장된 모든 소스를 살펴보고 관련 자료끼리 묶어 "
         "폴더를 만들고 자동으로 정리하는 기능입니다.\n\n"
@@ -1006,17 +1007,17 @@ async def test_strict_blocks_truncated_final_draft_after_review():
             return _strict_review_result(request, revised_text)
 
     request = RewriteRequestForTest.model_validate(
-        _payload(text=text, rewrite_mode="strict", protected_terms=[])
+        _payload(text=text, rewrite_mode="strict", max_rounds=2, protected_terms=[])
     )
     response = await RewriteGraphRunner(_settings(), TruncatedStrictLLM()).run(request)
 
     assert response.revisedText == request.text
     assert response.usage.rounds == 1
-    assert any("유효한 완성본" in warning for warning in response.warnings)
-    assert any("지나치게 짧아" in warning for warning in response.warnings)
+    assert any("결과 노출을 차단" in warning for warning in response.warnings)
+    assert any("Strict 최종 후보에서 출력 잘림" in warning for warning in response.warnings)
 
 
-async def test_strict_audit_fail_returns_risky_revision_with_warnings():
+async def test_strict_fallback_warnings_do_not_describe_returned_original_as_missing_terms():
     text = (
         '첫 번째는 소스 정리 기능입니다. "소셜미디어 성장에 가장 도움이 되는 자료를 찾아서 '
         '새로운 에이전트 스킬을 만드는 데 사용해줘"라는 요청을 보존해야 합니다. '
@@ -1072,18 +1073,17 @@ async def test_strict_audit_fail_returns_risky_revision_with_warnings():
             return _strict_review_result(request, revised_text)
 
     request = RewriteRequestForTest.model_validate(
-        _payload(text=text, rewrite_mode="strict", protected_terms=[])
+        _payload(text=text, rewrite_mode="strict", max_rounds=1, protected_terms=[])
     )
     response = await RewriteGraphRunner(_settings(), MissingQuoteStrictLLM()).run(request)
 
-    assert response.revisedText == "첫 번째는 소스 정리 기능입니다."
+    assert response.revisedText == request.text
     assert not any("보존되어야 하는 표현이 결과" in warning for warning in response.warnings)
     assert any("누락" in warning for warning in response.warnings)
-    assert not any("원문을 반환" in warning for warning in response.warnings)
-    assert all(change.riskLevel == "high" for change in response.changes)
+    assert any("원문을 반환" in warning for warning in response.warnings)
 
 
-async def test_strict_review_blocking_issues_return_current_draft_with_warning():
+async def test_strict_review_blocking_issues_block_current_draft_without_audit_rollback():
     class HoldReviewLLM:
         async def rewrite(self, request):
             raise AssertionError("strict graph should call node-specific methods")
@@ -1126,14 +1126,14 @@ async def test_strict_review_blocking_issues_return_current_draft_with_warning()
         _payload(
             text="문장을 조금 더 자연스럽게 정리합니다.",
             rewrite_mode="strict",
+            max_rounds=1,
             protected_terms=[],
         )
     )
     response = await RewriteGraphRunner(_settings(), HoldReviewLLM()).run(request)
 
-    assert response.revisedText == "문장을 더 세련되고 자연스럽게 정리합니다."
+    assert response.revisedText == request.text
     assert any("사람 검토" in warning for warning in response.warnings)
-    assert all(change.riskLevel == "high" for change in response.changes)
 
 
 async def test_strict_rewrite_does_not_repair_incomplete_revised_text_from_change_candidate():
@@ -1189,7 +1189,7 @@ async def test_strict_rewrite_does_not_repair_incomplete_revised_text_from_chang
             return _strict_review_result(request, revised_text)
 
     request = RewriteRequestForTest.model_validate(
-        _payload(text=text, rewrite_mode="strict", protected_terms=[])
+        _payload(text=text, rewrite_mode="strict", max_rounds=1, protected_terms=[])
     )
     response = await RewriteGraphRunner(_settings(), InconsistentStrictLLM()).run(request)
 
@@ -1199,12 +1199,11 @@ async def test_strict_rewrite_does_not_repair_incomplete_revised_text_from_chang
     ]
     assert response.revisedText == request.text
     assert not any("revisedText가 불완전" in item for item in response.summary)
-    assert any("유효한 완성본" in warning for warning in response.warnings)
+    assert any("결과 노출을 차단" in warning for warning in response.warnings)
 
 
-async def test_strict_review_can_return_safe_final_candidate():
+async def test_strict_review_can_return_safe_final_candidate_without_rewrite_loop():
     rewrite_calls = 0
-    audit_calls = 0
     text = (
         "첫 번째는 소스 정리 기능입니다. 에이전트가 저장된 모든 소스를 살펴보고 관련 자료끼리 묶어 "
         "폴더를 만들고 자동으로 정리하는 기능입니다.\n\n"
@@ -1245,22 +1244,19 @@ async def test_strict_review_can_return_safe_final_candidate():
             )
 
         async def audit(self, request, context, revised_text, changes):
-            nonlocal audit_calls
-            audit_calls += 1
             return AuditResult(status="full_pass", reason="모델 감사는 통과했습니다.")
 
         async def review(self, request, context, detection, revised_text, audit_result, residual_detection):
             return _strict_review_result(request, safe_text)
 
     request = RewriteRequestForTest.model_validate(
-        _payload(text=text, rewrite_mode="strict", protected_terms=[])
+        _payload(text=text, rewrite_mode="strict", max_rounds=2, protected_terms=[])
     )
     response = await RewriteGraphRunner(_settings(), ReviewRepairsLLM()).run(request)
 
     assert response.revisedText == safe_text
     assert response.usage.rounds == 1
     assert rewrite_calls == 1
-    assert audit_calls == 2
 
 
 def test_text_above_core_max_chars_returns_422():
@@ -1494,133 +1490,6 @@ async def test_openrouter_strict_detect_omits_temperature_for_parameter_routing(
     assert "temperature" not in calls[0]
 
 
-async def test_openrouter_strict_methods_use_compact_schemas_and_usage(monkeypatch):
-    calls = []
-    response_payloads = [
-        {
-            "revisedText": "정리된 strict 초안입니다.",
-            "changes": [
-                {
-                    "original": "원문",
-                    "revised": "정리된 strict 초안",
-                    "reason": "흐름을 다듬었습니다.",
-                    "type": "clarity",
-                    "riskLevel": "low",
-                }
-            ],
-            "summary": ["strict 초안을 만들었습니다."],
-            "appliedFindingIds": ["f-a2"],
-            "unresolvedFindingIds": [],
-        },
-        {
-            "status": "conditional_pass",
-            "warnings": ["핵심 표현 확인이 필요합니다."],
-            "flaggedEdits": [
-                {
-                    "before": "원문",
-                    "after": "정리된 strict 초안",
-                    "issue": "핵심 표현 확인",
-                    "checklistFailed": [13],
-                    "action": "rewrite_required",
-                    "correctionDirection": "핵심 표현을 원문에 맞춥니다.",
-                    "severity": "high",
-                }
-            ],
-            "reason": "감사 지시가 있습니다.",
-        },
-        {
-            "revisedText": "정리된 strict 최종본입니다.",
-            "changes": [
-                {
-                    "original": "원문",
-                    "revised": "정리된 strict 최종본",
-                    "reason": "감사 지시를 반영했습니다.",
-                    "type": "meaning",
-                    "riskLevel": "medium",
-                }
-            ],
-            "summary": ["strict 최종본을 만들었습니다."],
-            "warnings": [],
-            "finalBlockingIssues": [],
-        },
-    ]
-
-    class FakeCompletions:
-        async def create(self, **kwargs):
-            calls.append(kwargs)
-            payload = response_payloads.pop(0)
-            return SimpleNamespace(
-                choices=[
-                    SimpleNamespace(
-                        message=SimpleNamespace(content=json.dumps(payload, ensure_ascii=False))
-                    )
-                ],
-                usage=SimpleNamespace(prompt_tokens=17 + len(calls), completion_tokens=9 + len(calls)),
-            )
-
-    class FakeChat:
-        def __init__(self):
-            self.completions = FakeCompletions()
-
-    class FakeAsyncOpenAI:
-        def __init__(self, **kwargs):
-            self.chat = FakeChat()
-
-    monkeypatch.setitem(
-        sys.modules,
-        "openai",
-        SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI),
-    )
-
-    llm = OpenRouterRewriteLLM(
-        api_key="or-key",
-        base_url="https://openrouter.ai/api/v1",
-        app_title="Test App",
-        site_url=None,
-        model_name="openai/gpt-5-mini",
-        fast_model_name="openai/gpt-5-mini",
-        fast_fallback_model_name="openai/gpt-5-mini",
-        strict_detect_model_name="openai/gpt-5-mini",
-        strict_rewrite_model_name="openai/gpt-5-mini",
-        strict_audit_model_name="openai/gpt-5-mini",
-        strict_review_model_name="openai/gpt-5-mini",
-        strict_escalation_model_name="openai/gpt-5-mini",
-    )
-    request = RewriteRequestForTest.model_validate(_payload(rewrite_mode="strict"))
-    detection = DetectionResult(sentenceCount=1)
-
-    rewrite_result = await llm.rewrite_strict(request, {}, detection)
-    audit_result = await llm.audit(request, {}, rewrite_result.revisedText, [])
-    review_result = await llm.review(request, {}, detection, rewrite_result.revisedText, audit_result, detection)
-
-    assert rewrite_result.appliedFindingIds == ["f-a2"]
-    assert rewrite_result.inputTokens == 18
-    assert audit_result.status == "conditional_pass"
-    assert audit_result.inputTokens == 19
-    assert review_result.revisedText == "정리된 strict 최종본입니다."
-    assert review_result.inputTokens == 20
-    assert calls[0]["response_format"]["json_schema"]["schema"]["properties"].keys() == {
-        "revisedText",
-        "changes",
-        "summary",
-        "appliedFindingIds",
-        "unresolvedFindingIds",
-    }
-    assert calls[1]["response_format"]["json_schema"]["schema"]["properties"].keys() == {
-        "status",
-        "warnings",
-        "flaggedEdits",
-        "reason",
-    }
-    assert calls[2]["response_format"]["json_schema"]["schema"]["properties"].keys() == {
-        "revisedText",
-        "changes",
-        "summary",
-        "warnings",
-        "finalBlockingIssues",
-    }
-
-
 def test_openrouter_schema_marks_pydantic_default_fields_required():
     response_format = _openrouter_response_format(
         "detection_result",
@@ -1650,54 +1519,6 @@ def test_openrouter_schema_marks_pydantic_default_fields_required():
         "required": [],
         "type": "object",
     }
-
-
-def test_openrouter_strict_llm_output_schemas_are_compact():
-    rewrite_format = _openrouter_response_format(
-        "strict_rewrite_result",
-        StrictRewriteLLMResult.model_json_schema(),
-    )
-    audit_format = _openrouter_response_format(
-        "audit_result",
-        AuditLLMResult.model_json_schema(),
-    )
-    review_format = _openrouter_response_format(
-        "strict_review_result",
-        StrictReviewLLMResult.model_json_schema(),
-    )
-
-    rewrite_schema = rewrite_format["json_schema"]["schema"]
-    audit_schema = audit_format["json_schema"]["schema"]
-    review_schema = review_format["json_schema"]["schema"]
-    assert set(rewrite_schema["properties"]) == {
-        "revisedText",
-        "changes",
-        "summary",
-        "appliedFindingIds",
-        "unresolvedFindingIds",
-    }
-    assert set(audit_schema["properties"]) == {"status", "warnings", "flaggedEdits", "reason"}
-    assert set(review_schema["properties"]) == {
-        "revisedText",
-        "changes",
-        "summary",
-        "warnings",
-        "finalBlockingIssues",
-    }
-
-    compact_schema_text = json.dumps(
-        {
-            "rewrite": rewrite_schema,
-            "audit": audit_schema,
-            "review": review_schema,
-        },
-        ensure_ascii=False,
-    )
-    assert "charCountAfter" not in compact_schema_text
-    assert "changeRate" not in compact_schema_text
-    assert "editsPassed" not in compact_schema_text
-    assert "rollbackRequired" not in compact_schema_text
-    assert "finalAuditStatus" not in compact_schema_text
 
 
 def test_metrics_v2_computes_im_not_ai_signal_keys():
