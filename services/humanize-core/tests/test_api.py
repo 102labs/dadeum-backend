@@ -352,7 +352,7 @@ def test_prompts_pass_user_selected_rewrite_controls():
 
     assert payload["settings"] == {
         "user_intent": "문장을 더 부드럽게 다듬어 주세요.",
-        "mode_policy": "strict_only",
+        "mode_policy": "single_fast_plus_rewrite_with_preservation_audit",
         "tone": "friendly",
         "preserve_formatting": True,
     }
@@ -364,7 +364,7 @@ def test_prompts_pass_user_selected_rewrite_controls():
     assert "줄바꿈" in payload["rewrite_guidance"]["formatting"]
 
 
-def test_rewrite_prompt_runs_single_full_pass_with_strict_rules():
+def test_rewrite_prompt_runs_assertive_fast_plus_single_pass():
     request = RewriteRequestForTest.model_validate(
         _payload(
             text="2026년 이 기능은 데이터를 통해 성장을 지원합니다. 전략적 실행성과 구조화가 필요합니다.",
@@ -378,29 +378,32 @@ def test_rewrite_prompt_runs_single_full_pass_with_strict_rules():
     rendered_payload = json.dumps(payload, ensure_ascii=False)
 
     assert "strict detect" not in system_prompt
-    assert "one full-pass strict rewrite" in system_prompt
+    assert "strict" not in system_prompt.lower()
+    assert "strict" not in rendered_payload.lower()
+    assert "fast rewrite pass" in system_prompt
+    assert "Your job is rewriting, not auditing" in system_prompt
     assert "style_rules" not in payload
     assert "rewriting_playbook" not in payload
     assert "findings" not in payload
     assert "rewrite_strategy" in payload
-    assert "no_op_policy" in payload
-    assert any("원문을 그대로 반환하는 것은 실패" in item for item in payload["no_op_policy"])
+    assert payload["rewrite_pass"] == "assertive_fast_plus_single_pass"
+    assert "must_edit_policy" in payload
+    assert any("원문을 그대로 반환하는 것은 rewrite 실패" in item for item in payload["must_edit_policy"])
     assert "completion_contract" in payload
     assert "structured_output_contract" in payload
-    assert "strict_rules" in payload
-    assert payload["exact_preserve_targets"]["protected_terms"] == ["2026년"]
-    assert "2026년" in payload["exact_preserve_targets"]["dates"]
-    assert "single_full_pass" in payload["rewrite_strategy"]
+    assert "im_not_ai_quick_rules" in payload
+    assert "exact_preserve_targets" not in payload
+    assert "fast_plus_single_full_pass" in payload["rewrite_strategy"]
     assert payload["completion_contract"]["originalCharCount"] == len(request.text)
     assert "complete rewritten passage" in payload["completion_contract"]["scope"]
     assert any("revisedText is the single canonical final answer" in item for item in payload["structured_output_contract"])
     assert any("changes[].original and changes[].revised are local diff snippets only" in item for item in payload["structured_output_contract"])
-    assert "Rewrite/Audit Contract" in payload["strict_rules"]
+    assert "Rewrite/Audit Contract" in payload["im_not_ai_quick_rules"]
     assert "detect" not in payload
     assert "문장 흐름" in rendered_payload
     assert "리듬" in rendered_payload
     assert "명확성" in rendered_payload
-    assert "변경률은 품질 목표가 아니라" in payload["rewrite_guidance"]["rewrite_policy"]
+    assert "fast mode보다 한 단계 더 적극적으로" in payload["rewrite_guidance"]["rewrite_policy"]
 
 
 def test_review_prompt_applies_audit_corrections_and_reaudits():
@@ -436,7 +439,8 @@ def test_review_prompt_applies_audit_corrections_and_reaudits():
     )
 
     rendered = json.dumps(payload, ensure_ascii=False)
-    assert "strict_audit" in payload
+    assert "strict" not in rendered.lower()
+    assert "preservation_audit" in payload
     assert "fixed_review_routine" in payload
     assert "original_detection" not in payload
     assert "residual_detection" not in payload
@@ -457,12 +461,13 @@ def test_rewrite_prompt_embeds_strict_rules_without_detect_stage():
 
     assert not hasattr(prompts, "detect_user_prompt")
     assert not hasattr(prompts, "strict_rewrite_user_prompt")
-    assert rewrite_payload["rulebook"] == "strict-rules.md"
-    assert "strict_rules" in rewrite_payload
-    assert "A-1" in rewrite_payload["strict_rules"]
-    assert "Do not flag" in rewrite_payload["strict_rules"]
-    assert "A-2 example" in rewrite_payload["strict_rules"]
-    assert "Rewrite/Audit Contract" in rewrite_payload["strict_rules"]
+    assert rewrite_payload["rulebook"] == "fast-rewrite-rules"
+    assert "im_not_ai_quick_rules" in rewrite_payload
+    assert "strict_rules" not in rewrite_payload
+    assert "A-1" in rewrite_payload["im_not_ai_quick_rules"]
+    assert "Do not flag" in rewrite_payload["im_not_ai_quick_rules"]
+    assert "A-2 example" in rewrite_payload["im_not_ai_quick_rules"]
+    assert "Rewrite/Audit Contract" in rewrite_payload["im_not_ai_quick_rules"]
     assert not hasattr(resources, "ai_tell_taxonomy")
     assert hasattr(resources, "strict_rules")
 
@@ -485,9 +490,9 @@ def test_rewrite_audit_review_prompts_follow_single_strict_routine():
     audit_result = AuditResult(status="full_pass", reason="통과")
     review_prompt = prompts.review_user_prompt(request, context, request.text, audit_result)
 
-    assert "strict_rules" in json.loads(rewrite_prompt)
-    assert "strict_audit" in json.loads(review_prompt)
-    assert "exact_preserve_targets" in json.loads(rewrite_prompt)
+    assert "im_not_ai_quick_rules" in json.loads(rewrite_prompt)
+    assert "preservation_audit" in json.loads(review_prompt)
+    assert "exact_preserve_targets" not in json.loads(rewrite_prompt)
     assert "exact_preserve_targets" in json.loads(review_prompt)
     assert len(review_prompt) < len(rewrite_prompt)
 
@@ -505,6 +510,7 @@ def test_strict_audit_prompt_does_not_embed_scholarship_reference():
     payload = json.loads(prompts.audit_user_prompt(request, context, request.text, []))
     rendered_payload = json.dumps(payload, ensure_ascii=False)
 
+    assert "strict" not in rendered_payload.lower()
     assert "scholarship_constraints" not in payload
     assert "번역학계" not in rendered_payload
     assert "checklist_13" in payload
