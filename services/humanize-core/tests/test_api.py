@@ -423,14 +423,32 @@ def test_prompts_pass_user_selected_rewrite_controls():
         "preserve_formatting": True,
     }
     assert "우선 반영" in payload["rewrite_guidance"]["user_intent"]
-    assert "친근" in payload["rewrite_guidance"]["tone"]
+    assert "자연스럽고 부드러운" in payload["rewrite_guidance"]["tone"]
+    assert "공식 문서처럼 딱딱하게" in payload["rewrite_guidance"]["tone"]
     assert "protected_terms" not in payload["rewrite_guidance"]
     assert "max_rounds" not in payload["rewrite_guidance"]
     assert "rewrite_mode" not in payload["rewrite_guidance"]
     assert "줄바꿈" in payload["rewrite_guidance"]["formatting"]
 
 
-def test_rewrite_prompt_runs_active_rulebook_single_pass():
+def test_formal_tone_guidance_pushes_more_formal_register():
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            rewrite_mode="strict",
+            tone="formal",
+        )
+    )
+
+    payload = json.loads(prompts.rewrite_user_prompt(request, {}))
+    tone_guidance = payload["rewrite_guidance"]["tone"]
+
+    assert "한 단계 더 격식" in tone_guidance
+    assert "-습니다/-합니다" in tone_guidance
+    assert "구어체" in tone_guidance
+    assert "공식 문서나 보고서" in tone_guidance
+
+
+def test_strict_rewrite_prompt_runs_deepened_active_rulebook_single_pass():
     request = RewriteRequestForTest.model_validate(
         _payload(
             text="2026년 이 기능은 데이터를 통해 성장을 지원합니다. 전략적 실행성과 구조화가 필요합니다.",
@@ -453,7 +471,7 @@ def test_rewrite_prompt_runs_active_rulebook_single_pass():
     assert "rewriting_playbook" not in payload
     assert "findings" not in payload
     assert "rewrite_strategy" in payload
-    assert payload["rewrite_pass"] == "active_rulebook_single_pass"
+    assert payload["rewrite_pass"] == "deepened_active_rulebook_single_pass"
     assert "must_edit_policy" in payload
     assert any("원문을 그대로 반환하는 것은 rewrite 실패" in item for item in payload["must_edit_policy"])
     assert any("최소 하나 이상의 안전한 표현 개선" in item for item in payload["must_edit_policy"])
@@ -461,7 +479,10 @@ def test_rewrite_prompt_runs_active_rulebook_single_pass():
     assert "structured_output_contract" in payload
     assert "im_not_ai_quick_rules" in payload
     assert "exact_preserve_targets" not in payload
-    assert "active_rulebook_single_pass" in payload["rewrite_strategy"]
+    assert "deepened_active_rulebook_single_pass" in payload["rewrite_strategy"]
+    assert "기본 적극 윤문보다 한 단계 더 꼼꼼하게" in payload["rewrite_strategy"]
+    assert "25~45%" in payload["edit_intensity"]["target"]
+    assert "불필요한 전면 재작성" in payload["edit_intensity"]["avoid"]
     assert payload["completion_contract"]["originalCharCount"] == len(request.text)
     assert "complete rewritten passage" in payload["completion_contract"]["scope"]
     assert any("revisedText is the single canonical final answer" in item for item in payload["structured_output_contract"])
@@ -471,8 +492,26 @@ def test_rewrite_prompt_runs_active_rulebook_single_pass():
     assert "문장 흐름" in rendered_payload
     assert "리듬" in rendered_payload
     assert "명확성" in rendered_payload
-    assert "룰북을 적극 적용" in payload["rewrite_guidance"]["rewrite_policy"]
+    assert "한 단계 더 꼼꼼하게" in payload["rewrite_guidance"]["rewrite_policy"]
     assert "fast mode" not in rendered_payload
+
+
+def test_fast_rewrite_prompt_keeps_base_active_rulebook_intensity():
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            text="2026년 이 기능은 데이터를 통해 성장을 지원합니다. 전략적 실행성과 구조화가 필요합니다.",
+            rewrite_mode="fast",
+        )
+    )
+
+    payload = json.loads(prompts.rewrite_user_prompt(request, {}))
+    rendered_payload = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["rewrite_pass"] == "active_rulebook_single_pass"
+    assert "active_rulebook_single_pass" in payload["rewrite_strategy"]
+    assert "20~40%" in payload["edit_intensity"]["target"]
+    assert "25~45%" not in rendered_payload
+    assert "한 단계 더 꼼꼼하게" not in rendered_payload
 
 
 def test_review_prompt_applies_audit_corrections_and_reaudits():
