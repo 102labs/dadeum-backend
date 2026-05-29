@@ -44,7 +44,18 @@ def rewrite_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str
         "rulebook": "strict-rules.md",
         "strict_rules": strict_rules(),
         "rewrite_strategy": "single_full_pass: strict-rules.md를 기준으로 원문 전체를 한 번 자연스럽게 윤문하고 완성본 전체를 revisedText로 반환한다.",
-        "rewrite_scope": "문장 흐름, 리듬, 연결, 명확성, 번역투, AI 티 패턴을 전체 글 기준으로 다듬되 원문의 의미와 정보량은 보존한다.",
+        "rewrite_scope": "문장 흐름, 리듬, 연결, 명확성, 번역투, 반복 구조, AI 티 패턴을 전체 글 기준으로 다듬되 원문의 의미와 정보량은 보존한다.",
+        "no_op_policy": [
+            "원문을 그대로 반환하는 것은 실패다. 단, 이미 사람이 쓴 완성도 높은 문장이고 strict-rules.md 수정 후보가 전혀 없을 때만 허용한다.",
+            "보존 대상은 글자 단위로 유지하되, 그 주변 문장 흐름·어순·반복·번역투·장황한 연결은 적극적으로 다듬는다.",
+            "수치·날짜·직접 인용을 보존해야 한다는 이유로 전체 문장을 복사하지 않는다.",
+            "일반 업무 설명문은 의미가 같아도 표현은 더 자연스럽고 간결하게 바뀌어야 한다.",
+        ],
+        "edit_intensity": {
+            "target": "보존이 안전한 일반 문장은 10~25% 수준의 체감 변화가 나도록 다듬는다.",
+            "minimum": "strict-rules.md의 S1/S2 신호가 있거나 문장이 장황하면 최소 1개 이상의 실질 수정이 있어야 한다.",
+            "avoid": "새 정보 추가, 과한 마케팅 톤, 원문 구조 파괴, 인용·수치·날짜 변경",
+        },
         "exact_preserve_targets": exact_preserve_targets(request),
         "structured_output_contract": _STRICT_STRUCTURED_OUTPUT_CONTRACT,
         "self_check_required": [
@@ -236,7 +247,8 @@ def _user_intent_guidance(user_intent: str) -> str:
 def _strict_only_guidance() -> str:
     return (
         "단일 strict 윤문 루틴이다. 전체 글을 한 번 자연스럽게 다듬은 뒤, 별도 감사 단계가 의미 변화와 "
-        "보존 대상 변경을 검사한다. 변경률은 품질 목표가 아니라 보존 위험 신호로만 본다."
+        "보존 대상 변경을 검사한다. 감사 단계가 있으므로 rewrite는 과도하게 움츠러들지 말고, 보존이 안전한 "
+        "문장은 실제로 읽히는 표현을 개선한다. 변경률은 품질 목표가 아니라 보존 위험 신호로만 본다."
     )
 
 

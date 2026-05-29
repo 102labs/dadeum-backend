@@ -383,6 +383,8 @@ def test_rewrite_prompt_runs_single_full_pass_with_strict_rules():
     assert "rewriting_playbook" not in payload
     assert "findings" not in payload
     assert "rewrite_strategy" in payload
+    assert "no_op_policy" in payload
+    assert any("원문을 그대로 반환하는 것은 실패" in item for item in payload["no_op_policy"])
     assert "completion_contract" in payload
     assert "structured_output_contract" in payload
     assert "strict_rules" in payload
@@ -458,7 +460,6 @@ def test_rewrite_prompt_embeds_strict_rules_without_detect_stage():
     assert rewrite_payload["rulebook"] == "strict-rules.md"
     assert "strict_rules" in rewrite_payload
     assert "A-1" in rewrite_payload["strict_rules"]
-    assert "Operational Notes" in rewrite_payload["strict_rules"]
     assert "Do not flag" in rewrite_payload["strict_rules"]
     assert "A-2 example" in rewrite_payload["strict_rules"]
     assert "Rewrite/Audit Contract" in rewrite_payload["strict_rules"]
@@ -901,6 +902,44 @@ async def test_single_strict_graph_returns_after_clean_audit():
     assert response.usage.rounds == 1
     assert response.usage.inputTokens == 8
     assert response.usage.outputTokens == 10
+
+
+async def test_strict_rewrite_runs_once_even_when_initial_draft_is_no_op():
+    calls = []
+    text = (
+        "다음은 플랜 모드입니다. 플랜 모드는 바로 구현에 들어가기 전에 먼저 계획을 세우는 기능입니다. "
+        "플러스 버튼을 눌러 켤 수도 있고, 슬래시 플래닝 명령어로 실행할 수도 있습니다. "
+        "계획이 마음에 들지 않으면 수정하고 싶은 부분을 입력해 다시 다듬을 수 있습니다. "
+        "다음으로 MCP 커맨드가 있습니다. MCP 명령어를 입력하면 현재 활성화된 MCP들을 확인할 수 있습니다."
+    )
+
+    class NoOpRewriteLLM:
+        async def rewrite(self, request):
+            raise AssertionError("strict graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            calls.append(("rewrite", {}))
+            return RewriteResult(
+                revisedText=request.text,
+                changes=[],
+                summary=["원문을 유지했습니다."],
+                inputTokens=3,
+                outputTokens=4,
+            )
+
+        async def audit(self, request, context, revised_text, changes):
+            calls.append(("audit", {"revised_text": revised_text}))
+            return AuditResult(status="full_pass", reason="보존 검사를 통과했습니다.", inputTokens=7, outputTokens=8)
+
+    response = await RewriteGraphRunner(_settings(), NoOpRewriteLLM()).run(
+        RewriteRequestForTest.model_validate(_payload(text=text, protected_terms=[]))
+    )
+
+    assert [call[0] for call in calls] == ["rewrite", "audit"]
+    assert calls[1][1]["revised_text"] == text
+    assert response.revisedText == text
+    assert response.usage.inputTokens == 10
+    assert response.usage.outputTokens == 12
 
 
 async def test_strict_conditional_audit_is_handled_by_review_without_rewrite_loop():
