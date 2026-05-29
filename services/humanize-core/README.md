@@ -90,8 +90,12 @@ prepare -> detect -> rewrite -> audit -> review -> finalize
 ```
 
 Strict mode does not loop. The `review` stage applies the first audit feedback,
-checks residual AI-tell patterns, performs one conservative correction pass, and
-the graph re-runs the strict audit before `finalize`.
+checks residual AI-tell patterns, and performs one conservative correction pass.
+The graph re-runs the strict audit only when the first audit is not a full pass,
+the review changed the draft, review reports blocking issues, or the final text
+looks incomplete. Preservation risks are returned as warnings and high-risk
+changes rather than discarded; only invalid output such as an empty or clearly
+truncated final text falls back to the original.
 
 The OpenAI provider uses the Responses API with strict JSON Schema structured
 output for `revisedText`, `changes`, and `summary`. Usage metrics come from the
@@ -99,7 +103,9 @@ provider response metadata, not from model-generated JSON.
 
 The OpenRouter provider uses Chat Completions with `response_format:
 json_schema` for Fast and every Strict node. It sets provider routing to require
-models that support the requested structured-output parameters.
+models that support the requested structured-output parameters. Strict rewrite,
+audit, and review request compact LLM schemas and Core enriches the internal
+metadata after parsing.
 
 ## Privacy Boundary
 

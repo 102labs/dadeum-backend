@@ -148,5 +148,34 @@ class StrictReviewResult(BaseModel):
     outputTokens: int = 0
 
 
+class StrictRewriteLLMResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revisedText: str
+    changes: list[Change]
+    summary: list[str]
+    appliedFindingIds: list[str] = Field(default_factory=list)
+    unresolvedFindingIds: list[str] = Field(default_factory=list)
+
+
+class AuditLLMResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: AuditStatus
+    warnings: list[str] = Field(default_factory=list)
+    flaggedEdits: list[FlaggedEdit] = Field(default_factory=list)
+    reason: str
+
+
+class StrictReviewLLMResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revisedText: str
+    changes: list[Change]
+    summary: list[str]
+    warnings: list[str] = Field(default_factory=list)
+    finalBlockingIssues: list[str] = Field(default_factory=list)
+
+
 class HumanizeContext(BaseModel):
     model_config = ConfigDict(extra="forbid")

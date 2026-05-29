@@ -43,7 +43,6 @@ _STRICT_STRUCTURED_OUTPUT_CONTRACT = [
     "Never put a partial prefix, continuation stub, excerpt, or dangling clause in revisedText.",
     "changes[].original and changes[].revised are local diff snippets only. Do not put the full passage in changes[].revised unless the entire passage truly changed as one unit.",
     "If revisedText and changes[].revised disagree, the response is invalid. Copy the complete final passage into revisedText before returning JSON.",
-    "charCountAfter must match revisedText length, not the length of a change snippet.",
     "summary may describe what changed, but it must not be the only place that contains the completed rewrite.",
 ]
 
@@ -147,10 +146,9 @@ def strict_rewrite_user_prompt(
             "새 사실, 예시, 비유, 근거, 과한 마케팅 문구를 추가하지 않는다.",
         ],
         "diff_contract": {
-            "edits": "의미 있는 변경 단위별로 findingId(optional), before, after, category, reason, action, changeRate를 기록",
-            "findingsResolved": "priority_findings 중 개선된 finding id",
-            "findingsUnresolved": "보존 또는 문맥상 남긴 finding id와 이유는 summary에 기록",
-            "overPolishWarning": "핵심어 보존 실패, 문체 이탈, 새 정보 추가 위험, 또는 변경률 50% 초과가 다른 위험 신호와 함께 나타나면 true. 변경률 단독 초과는 자동 실패가 아니라 리뷰 신호다.",
+            "changes": "의미 있는 변경 단위만 local diff snippet으로 기록한다.",
+            "appliedFindingIds": "priority_findings 중 개선된 finding id만 기록한다.",
+            "unresolvedFindingIds": "보존 또는 문맥상 남긴 finding id만 기록하고 이유는 summary에 짧게 적는다.",
         },
         "text": request.text,
     }
@@ -198,7 +196,7 @@ def audit_user_prompt(
                 "preserve_exact": "숫자·고유명사·직접 인용 등을 글자 단위로 복원해야 함",
                 "warning": "최종 반환은 가능하지만 사람이 알아야 할 경미한 주의점",
             },
-            "status": "full_pass는 수정 필요 없음, conditional_pass는 review에서 고칠 항목 있음, fail은 누락/의미변경/잘림처럼 최종 차단 가능성이 큼",
+            "status": "full_pass는 수정 필요 없음, conditional_pass는 review에서 고칠 항목 있음, fail은 누락/의미변경/잘림처럼 강한 review 지시가 필요한 상태",
         },
         "original_text": request.text,
         "revised_text": revised_text,
@@ -211,8 +209,8 @@ def review_system_prompt() -> str:
     return (
         "You are the final strict review-and-correction step for Korean business rewriting. "
         "Apply audit correction directions and residual AI-tell review in one conservative final editing pass. "
-        "Then internally re-run the same content-fidelity audit checklist and make one final conservative patch if needed. "
-        "Return the complete final revised passage, local changes, summaries, warnings, and final audit status. "
+        "Preserve meaning, quotations, numbers, names, and document order; if a correction is unsafe, keep the draft wording and warn. "
+        "Return the complete final revised passage, local changes, summaries, warnings, and blocking issues only. "
         "Return only JSON matching the schema."
     )
 
@@ -236,15 +234,15 @@ def review_user_prompt(
         ],
         "original_detection": _compact_detection_summary(detection),
         "priority_findings": _priority_findings(detection),
-        "strict_audit": audit_result.model_dump(),
+        "strict_audit": _compact_audit_result(audit_result),
         "residual_detection": _compact_detection_summary(residual_detection),
         "residual_findings": _priority_findings(residual_detection),
         "review_contract": [
             "revisedText에는 최종 완성본 전체를 넣는다. 부분 문장, 이어쓰기, 요약은 실패다.",
             "changes는 최종본에 실제 반영된 로컬 변경만 기록한다.",
-            "auditCorrectionsApplied에는 strict_audit 지시 중 반영한 항목을 요약한다.",
-            "finalAuditStatus/finalAuditWarnings/finalBlockingIssues는 내부 재감사 결과를 기준으로 채운다.",
-            "finalBlockingIssues가 있으면 결과가 차단될 수 있으므로, 가능한 경우 원문에 가깝게 보수 패치한 뒤 반환한다.",
+            "warnings에는 사람이 확인해야 할 경미한 보존/품질 위험을 넣는다.",
+            "finalBlockingIssues에는 모델이 안전하게 고치지 못한 의미·인용·숫자·누락 위험만 넣는다.",
+            "finalBlockingIssues가 있더라도 revisedText는 완성본으로 반환한다.",
         ],
         "original_text": request.text,
         "draft_revised_text": revised_text,
@@ -325,6 +323,27 @@ def _compact_detection_summary(detection: DetectionResult) -> dict[str, Any]:
         "severityWeightedScore": detection.severityWeightedScore,
         "categorySummary": detection.categorySummary,
         "sentenceLengthStats": detection.sentenceLengthStats,
+    }
+
+
+def _compact_audit_result(audit_result: AuditResult) -> dict[str, Any]:
+    return {
+        "status": audit_result.status,
+        "reason": _clip(audit_result.reason, 240),
+        "warnings": [_clip(warning, 200) for warning in audit_result.warnings[:8]],
+        "flaggedEdits": [
+            {
+                "findingId": edit.findingId,
+                "before": _clip(edit.before, 160),
+                "after": _clip(edit.after, 160),
+                "issue": _clip(edit.issue, 220),
+                "checklistFailed": edit.checklistFailed,
+                "action": edit.action,
+                "correctionDirection": _clip(edit.correctionDirection, 240),
+                "severity": edit.severity,
+            }
+            for edit in audit_result.flaggedEdits[:12]
+        ],
     }
 
 

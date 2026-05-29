@@ -56,7 +56,6 @@ class RewriteState(TypedDict, total=False):
     review_result: StrictReviewResult
     round: int
     llm_result: LLMRewriteResult
-    display_safe_llm_result: LLMRewriteResult
     response: RewriteResponse
     started_at: float
 
@@ -246,7 +245,7 @@ class RewriteGraphRunner:
         )
         llm_result.changes = mark_high_risk_if_needed(
             llm_result.changes,
-            audit_result.status == "fail" or _strict_audit_requires_rollback(audit_result),
+            audit_result.status == "fail" or _strict_audit_requires_correction(audit_result),
         )
         return {"audit_result": audit_result, "llm_result": llm_result}
 
@@ -282,7 +281,7 @@ class RewriteGraphRunner:
                     "warnings": warnings,
                     "status": status,
                     "flaggedEdits": flagged_edits,
-                    "rollbackRequired": sum(1 for edit in flagged_edits if _flagged_edit_blocks(edit)),
+                    "rollbackRequired": sum(1 for edit in flagged_edits if _flagged_edit_requires_correction(edit)),
                     "editsFlagged": len(flagged_edits),
                     "editsPassed": max(0, len(changes) - len(flagged_edits)),
                 }
@@ -295,7 +294,7 @@ class RewriteGraphRunner:
             warnings=local_warnings,
             highRiskChangeIndexes=[0] if local_warnings and changes else [],
             flaggedEdits=local_flagged,
-            rollbackRequired=sum(1 for edit in local_flagged if _flagged_edit_blocks(edit)),
+            rollbackRequired=sum(1 for edit in local_flagged if _flagged_edit_requires_correction(edit)),
             editsFlagged=len(local_flagged),
             editsPassed=max(0, len(changes) - len(local_flagged)),
             reason="로컬 완성도 감사 결과입니다.",
@@ -333,25 +332,35 @@ class RewriteGraphRunner:
             inputTokens=review_result.inputTokens,
             outputTokens=review_result.outputTokens,
         )
-        final_audit_result = await self._audit_candidate(
+        should_run_final_audit = _should_run_final_audit(
             request,
-            state["humanize_context"],
-            final_llm_result.revisedText,
-            final_llm_result.changes,
+            state["audit_result"],
+            llm_result.revisedText,
+            review_result,
+            final_llm_result,
+        )
+        final_audit_result = (
+            await self._audit_candidate(
+                request,
+                state["humanize_context"],
+                final_llm_result.revisedText,
+                final_llm_result.changes,
+            )
+            if should_run_final_audit
+            else _without_usage_tokens(state["audit_result"])
         )
         review_result = _merge_final_audit_into_review(review_result, final_audit_result)
         final_llm_result.changes = mark_high_risk_if_needed(
             final_llm_result.changes,
-            final_audit_result.status == "fail" or _strict_audit_requires_rollback(final_audit_result),
+            final_audit_result.status == "fail"
+            or _strict_audit_requires_correction(final_audit_result)
+            or bool(review_result.finalBlockingIssues),
         )
-        update: RewriteState = {
+        return {
             "review_result": review_result,
             "final_audit_result": final_audit_result,
             "llm_result": final_llm_result,
         }
-        if _strict_candidate_is_display_safe(request, final_llm_result, final_audit_result, review_result):
-            update["display_safe_llm_result"] = final_llm_result
-        return update
 
     async def _finalize(self, state: RewriteState) -> RewriteState:
         llm_result = state["llm_result"]
@@ -369,7 +378,7 @@ class RewriteGraphRunner:
         elif review_result:
             warnings.extend(review_result.warnings)
         if state.get("selected_mode") == "strict":
-            llm_result, warnings = _apply_strict_terminal_safety(state, llm_result, warnings)
+            llm_result, warnings = _apply_strict_invalid_output_guard(state, llm_result, warnings)
         latency_ms = int((time.perf_counter() - state["started_at"]) * 1000)
         response = RewriteResponse(
             revisedText=llm_result.revisedText,
@@ -424,7 +433,7 @@ def _local_detection(request: RewriteRequest, *, text: str | None = None) -> Det
 def _audit_status(local_warnings: list[str], model_status: str, flagged_edits: list[FlaggedEdit]) -> str:
     if any(_is_strict_completion_warning(warning) for warning in local_warnings):
         return "fail"
-    if any(_flagged_edit_blocks(edit) for edit in flagged_edits):
+    if any(_flagged_edit_requires_correction(edit) for edit in flagged_edits):
         return "conditional_pass" if model_status == "full_pass" else model_status
     if flagged_edits and model_status == "full_pass":
         return "conditional_pass"
@@ -466,7 +475,7 @@ def _enrich_strict_rewrite_result(
             "findingsResolved": findings_resolved,
             "findingsUnresolved": findings_unresolved,
             "overPolishWarning": strict_result.overPolishWarning
-            or _strict_over_polish_requires_retry(over_polish_signals(request.text, strict_result.revisedText)),
+            or _strict_over_polish_blocks_candidate(over_polish_signals(request.text, strict_result.revisedText)),
             "edits": edits,
             "summary": summary,
         }
@@ -501,7 +510,7 @@ def _merge_flagged_edits(local_edits: list[FlaggedEdit], model_edits: list[Flagg
     return merged
 
 
-def _strict_over_polish_requires_retry(signals: list[str]) -> bool:
+def _strict_over_polish_blocks_candidate(signals: list[str]) -> bool:
     blockers = _strict_over_polish_blockers(signals)
     return len(blockers) >= 2 or ("change_rate_over_50" in signals and bool(blockers))
 
@@ -528,9 +537,9 @@ def _local_strict_review(
     if signals:
         warnings.append("과윤문 신호가 감지됐습니다: " + ", ".join(signals))
     blocking_issues: list[str] = []
-    if audit_result.status == "fail" or _strict_audit_requires_rollback(audit_result):
+    if audit_result.status == "fail" or _strict_audit_requires_correction(audit_result):
         blocking_issues.append("초기 strict 감사에서 보수 수정이 필요한 항목이 남았습니다.")
-    if _strict_over_polish_requires_retry(signals):
+    if _strict_over_polish_blocks_candidate(signals):
         blocking_issues.append("변경률 외 과윤문 신호가 함께 감지됐습니다.")
     summary = list(llm_result.summary)
     summary.append("Strict review: 감사 지시와 잔존 AI 티 패턴을 확인했습니다.")
@@ -572,7 +581,7 @@ def _augment_review_with_local_quality_signals(
         warnings.append("과윤문 신호가 감지됐습니다: " + ", ".join(signals))
 
     blocking = list(review_result.finalBlockingIssues)
-    if _strict_over_polish_requires_retry(signals):
+    if _strict_over_polish_blocks_candidate(signals):
         blocking.append("변경률 외 과윤문 신호가 함께 감지됐습니다.")
 
     quality = review_result.qualityLevel
@@ -601,6 +610,24 @@ def _merge_findings(left: list, right: list) -> list:
     return merged
 
 
+def _should_run_final_audit(
+    request: RewriteRequest,
+    audit_result: AuditResult,
+    draft_text: str,
+    review_result: StrictReviewResult,
+    final_llm_result: LLMRewriteResult,
+) -> bool:
+    if audit_result.status != "full_pass" or audit_result.flaggedEdits:
+        return True
+    if review_result.finalBlockingIssues:
+        return True
+    if final_llm_result.revisedText.strip() != draft_text.strip():
+        return True
+    if _strict_completion_warnings(request, final_llm_result.revisedText, review_result.warnings):
+        return True
+    return False
+
+
 def _merge_final_audit_into_review(
     review_result: StrictReviewResult,
     final_audit_result: AuditResult,
@@ -608,11 +635,11 @@ def _merge_final_audit_into_review(
     blocking = list(review_result.finalBlockingIssues)
     if final_audit_result.status == "fail":
         blocking.append("최종 감사에서 원문 대비 누락 또는 의미 변화 가능성이 감지됐습니다.")
-    if _strict_audit_requires_rollback(final_audit_result):
+    if _strict_audit_requires_correction(final_audit_result):
         blocking.extend(
             edit.correctionDirection or edit.issue
             for edit in final_audit_result.flaggedEdits
-            if _flagged_edit_blocks(edit)
+            if _flagged_edit_requires_correction(edit)
         )
     return review_result.model_copy(
         update={
@@ -623,51 +650,20 @@ def _merge_final_audit_into_review(
     )
 
 
-def _strict_candidate_is_display_safe(
-    request: RewriteRequest,
-    llm_result: LLMRewriteResult,
-    audit_result: AuditResult,
-    review_result: StrictReviewResult,
-) -> bool:
-    warnings = [*audit_result.warnings, *review_result.warnings, *review_result.finalAuditWarnings]
-    if _has_strict_completion_warning(warnings):
-        return False
-    if _strict_completion_warnings(request, llm_result.revisedText):
-        return False
-    if audit_result.status == "fail" or _strict_audit_requires_rollback(audit_result):
-        return False
-    if review_result.finalAuditStatus == "fail" or review_result.finalBlockingIssues:
-        return False
-    return True
-
-
-def _apply_strict_terminal_safety(
+def _apply_strict_invalid_output_guard(
     state: RewriteState,
     llm_result: LLMRewriteResult,
     warnings: list[str],
 ) -> tuple[LLMRewriteResult, list[str]]:
-    audit_result = state.get("final_audit_result") or state.get("audit_result")
-    review_result = state.get("review_result")
-    if audit_result is None:
-        return llm_result, warnings
-
     completion_warnings = _strict_completion_warnings(
         state["request"],
         llm_result.revisedText,
         warnings,
     )
     all_warnings = _dedupe([*warnings, *completion_warnings])
-    review_blocked = review_result is not None and bool(review_result.finalBlockingIssues)
-    should_block = (
-        bool(completion_warnings)
-        or audit_result.status == "fail"
-        or review_blocked
-        or _strict_audit_requires_rollback(audit_result)
-    )
-    if not should_block:
+    if not completion_warnings:
         return llm_result, all_warnings
 
-    fallback_warnings = _strict_fallback_warnings(state, all_warnings, review_blocked)
     request = state["request"]
     fallback = LLMRewriteResult(
         revisedText=request.text,
@@ -675,49 +671,24 @@ def _apply_strict_terminal_safety(
             Change(
                 original="strict_rewrite_draft",
                 revised="original_text",
-                reason="Strict 최종 초안이 완성도/보존 안전 기준을 통과하지 못해 원문을 반환했습니다.",
+                reason="Strict 최종 초안이 비어 있거나 잘린 것으로 판단되어 원문을 반환했습니다.",
                 type="meaning",
                 riskLevel="high",
             )
         ],
-        summary=["Strict 최종 초안이 안전 기준을 통과하지 못해 원문을 반환했습니다."],
+        summary=["Strict 최종 초안이 유효한 완성본이 아니어서 원문을 반환했습니다."],
     )
-    fallback_warnings.append("Strict가 안전한 윤문 결과를 만들지 못해 결과 노출을 차단하고 원문을 반환했습니다.")
-    return fallback, _dedupe(fallback_warnings)
+    all_warnings.append("Strict 최종 후보가 유효한 완성본이 아니어서 원문을 반환했습니다.")
+    return fallback, _dedupe(all_warnings)
 
 
-def _strict_fallback_warnings(
-    state: RewriteState,
-    discarded_warnings: list[str],
-    review_blocked: bool,
-) -> list[str]:
-    warnings = list(state.get("warnings", []))
-    if review_blocked:
-        warnings.append("Strict 최종 후보가 감사/리뷰 기준을 통과하지 못해 사람 검토가 필요합니다.")
-    if any(
-        "누락" in warning
-        or "의미" in warning
-        or "고유명사" in warning
-        or "인용" in warning
-        for warning in discarded_warnings
-    ):
-        warnings.append("Strict 최종 후보에서 원문 대비 누락 또는 의미 보존 위험이 감지됐습니다.")
-    if any(_is_strict_completion_warning(warning) for warning in discarded_warnings):
-        warnings.append("Strict 최종 후보에서 출력 잘림 또는 문장·문단 누락 신호가 감지됐습니다.")
-    if any("과윤문 신호" in warning for warning in discarded_warnings):
-        warnings.append("Strict 최종 후보에서 과윤문 신호가 감지됐습니다.")
-    if any("잔존 S1" in warning for warning in discarded_warnings):
-        warnings.append("Strict 최종 후보에 잔존 S1 AI 티 패턴이 있었습니다.")
-    return _dedupe(warnings)
-
-
-def _strict_audit_requires_rollback(audit_result: AuditResult) -> bool:
+def _strict_audit_requires_correction(audit_result: AuditResult) -> bool:
     return audit_result.rollbackRequired > 0 or any(
-        _flagged_edit_blocks(edit) for edit in audit_result.flaggedEdits
+        _flagged_edit_requires_correction(edit) for edit in audit_result.flaggedEdits
     )
 
 
-def _flagged_edit_blocks(edit: FlaggedEdit) -> bool:
+def _flagged_edit_requires_correction(edit: FlaggedEdit) -> bool:
     return edit.action in {"restore_original", "preserve_exact", "rollback_required"} or (
         edit.action in {"rewrite_required", "rewrite_with_hedge_preserved"} and edit.severity == "high"
     )
@@ -776,10 +747,6 @@ def _model_reports_incomplete(warnings: list[str]) -> bool:
     return any(_INCOMPLETE_WARNING_RE.search(warning) for warning in warnings)
 
 
-def _has_strict_completion_warning(warnings: list[str]) -> bool:
-    return any(_is_strict_completion_warning(warning) for warning in warnings)
-
-
 def _is_strict_completion_warning(warning: str) -> bool:
     return warning.startswith("Strict 결과가") or _INCOMPLETE_WARNING_RE.search(warning) is not None
 
@@ -820,3 +787,7 @@ def _sum_output_tokens(state: RewriteState) -> int:
 
 def _token_value(value: object | None, attr: str) -> int:
     return int(getattr(value, attr, 0) or 0)
+
+
+def _without_usage_tokens(audit_result: AuditResult) -> AuditResult:
+    return audit_result.model_copy(update={"inputTokens": 0, "outputTokens": 0})
