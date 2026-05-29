@@ -12,6 +12,10 @@ from humanize_core.im_not_ai.audit import (
     mark_high_risk_if_needed,
     split_sentences,
 )
+from humanize_core.im_not_ai.preservation import (
+    checklist_for_preservation_label,
+    preserved_units_for_text,
+)
 from humanize_core.im_not_ai.schemas import (
     AuditResult,
     FlaggedEdit,
@@ -32,14 +36,6 @@ _INCOMPLETE_WARNING_RE = re.compile(
     r"잘렸|잘림|중간에\s*끊|불완전|미완성|완료되지",
     re.IGNORECASE,
 )
-_DATE_RE = re.compile(r"\d{4}\s*년|\d{1,2}\s*월|\d{1,2}\s*일|\d{4}-\d{1,2}-\d{1,2}")
-_NUMBER_UNIT_RE = re.compile(
-    r"\d[\d,]*(?:\.\d+)?\s*(?:%|퍼센트|원|달러|명|건|개|회|년|월|일|시간|분|초|kg|g|km|m|cm|GB|MB|KB)?"
-)
-_QUOTE_RE = re.compile(r'"[^"]{1,300}"|“[^”]{1,300}”|‘[^’]{1,300}’|\'[^\']{1,300}\'')
-_URL_RE = re.compile(r"https?://[^\s)>\"]+|www\.[^\s)>\"]+")
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
-_CODE_SPAN_RE = re.compile(r"`[^`\n]{1,160}`")
 
 
 class RewriteState(TypedDict, total=False):
@@ -123,7 +119,7 @@ class RewriteGraphRunner:
         )
         llm_result.changes = mark_high_risk_if_needed(
             llm_result.changes,
-            audit_result.status == "fail" or _strict_audit_requires_rollback(audit_result),
+            audit_result.status == "fail" or _audit_requires_preservation_repair(audit_result),
         )
         return {"audit_result": audit_result, "llm_result": llm_result}
 
@@ -134,7 +130,7 @@ class RewriteGraphRunner:
         revised_text: str,
         changes: list[Change],
     ) -> AuditResult:
-        completion_warnings = _strict_completion_warnings(request, revised_text)
+        completion_warnings = _completion_warnings(request, revised_text)
         local_flagged = [
             *_local_flagged_edits_from_warnings(completion_warnings),
             *_local_preservation_flagged_edits(request, revised_text),
@@ -148,7 +144,7 @@ class RewriteGraphRunner:
                 revised_text,
                 [change.model_dump() for change in changes],
             )
-            model_completion_warnings = _strict_completion_warnings(
+            model_completion_warnings = _completion_warnings(
                 request,
                 revised_text,
                 model_audit.warnings,
@@ -261,7 +257,7 @@ def _audit_requires_review(audit_result: AuditResult) -> bool:
         return True
     if audit_result.status == "conditional_pass":
         return True
-    if _strict_audit_requires_rollback(audit_result):
+    if _audit_requires_preservation_repair(audit_result):
         return True
     return any(edit.action != "warning" for edit in audit_result.flaggedEdits)
 
@@ -273,7 +269,7 @@ def _rewrite_result_state(
 ) -> RewriteState:
     rate = rewrite_result.changeRate or change_rate(request.text, rewrite_result.revisedText)
     summary = list(rewrite_result.summary)
-    summary.append(f"Strict 단일 초안 메타: 변경률 {rate:.2f}%.")
+    summary.append(f"Rewrite 단일 초안 메타: 변경률 {rate:.2f}%.")
     llm_result = LLMRewriteResult(
         revisedText=rewrite_result.revisedText,
         changes=rewrite_result.changes,
@@ -290,7 +286,7 @@ def _rewrite_result_state(
 
 
 def _audit_status(local_warnings: list[str], model_status: str, flagged_edits: list[FlaggedEdit]) -> str:
-    if any(_is_strict_completion_warning(warning) for warning in local_warnings):
+    if any(_is_completion_warning(warning) for warning in local_warnings):
         return "fail"
     if any(_flagged_edit_blocks(edit) for edit in flagged_edits):
         return "conditional_pass" if model_status == "full_pass" else model_status
@@ -304,7 +300,7 @@ def _audit_status(local_warnings: list[str], model_status: str, flagged_edits: l
 def _local_flagged_edits_from_warnings(local_warnings: list[str]) -> list[FlaggedEdit]:
     flagged: list[FlaggedEdit] = []
     for warning in local_warnings:
-        if _is_strict_completion_warning(warning):
+        if _is_completion_warning(warning):
             flagged.append(
                 FlaggedEdit(
                     issue=warning,
@@ -319,8 +315,8 @@ def _local_flagged_edits_from_warnings(local_warnings: list[str]) -> list[Flagge
 
 def _local_preservation_flagged_edits(request: RewriteRequest, revised_text: str) -> list[FlaggedEdit]:
     flagged: list[FlaggedEdit] = []
-    original_units = dict(_preserved_units_for_text(request.text, request.protected_terms))
-    revised_units = dict(_preserved_units_for_text(revised_text, request.protected_terms))
+    original_units = dict(preserved_units_for_text(request.text, request.protected_terms))
+    revised_units = dict(preserved_units_for_text(revised_text, request.protected_terms))
     for label, values in original_units.items():
         original_counts = Counter(values)
         for value, expected_count in original_counts.items():
@@ -332,7 +328,7 @@ def _local_preservation_flagged_edits(request: RewriteRequest, revised_text: str
                     before=value,
                     after="",
                     issue=f"{label} 보존 대상이 원문보다 적게 남았습니다: {value}",
-                    checklistFailed=_checklist_for_preservation_label(label),
+                    checklistFailed=checklist_for_preservation_label(label),
                     action="preserve_exact",
                     correctionDirection=f"{label} '{value}'를 원문 그대로 복원합니다.",
                     severity="high",
@@ -350,45 +346,13 @@ def _local_preservation_flagged_edits(request: RewriteRequest, revised_text: str
                     before="",
                     after=value,
                     issue=f"{label} 값이 원문보다 많이 추가됐습니다: {value}",
-                    checklistFailed=_checklist_for_preservation_label(label),
+                    checklistFailed=checklist_for_preservation_label(label),
                     action="rewrite_required",
                     correctionDirection=f"원문에 없는 {label} '{value}'를 제거하거나 원문 표현으로 복원합니다.",
                     severity="high",
                 )
             )
     return _merge_flagged_edits(flagged, [])
-
-
-def _preserved_units(request: RewriteRequest) -> list[tuple[str, list[str]]]:
-    return _preserved_units_for_text(request.text, request.protected_terms)
-
-
-def _preserved_units_for_text(text: str, protected_terms: list[str]) -> list[tuple[str, list[str]]]:
-    return [
-        ("사용자 보호어", _dedupe([term for term in protected_terms if term in text])),
-        ("직접 인용", _regex_values(_QUOTE_RE, text)),
-        ("URL", _regex_values(_URL_RE, text)),
-        ("이메일", _regex_values(_EMAIL_RE, text)),
-        ("코드 표기", _regex_values(_CODE_SPAN_RE, text)),
-        ("날짜", _regex_values(_DATE_RE, text)),
-        ("수치/단위", _regex_values(_NUMBER_UNIT_RE, text)),
-    ]
-
-
-def _regex_values(pattern: re.Pattern[str], text: str) -> list[str]:
-    return [match.group(0) for match in pattern.finditer(text) if match.group(0).strip()]
-
-
-def _checklist_for_preservation_label(label: str) -> list[int]:
-    if label in {"수치/단위"}:
-        return [2]
-    if label == "날짜":
-        return [3]
-    if label == "직접 인용":
-        return [4]
-    if label in {"URL", "이메일", "코드 표기"}:
-        return [5, 6]
-    return [1, 13]
 
 
 def _merge_flagged_edits(local_edits: list[FlaggedEdit], model_edits: list[FlaggedEdit]) -> list[FlaggedEdit]:
@@ -417,7 +381,7 @@ def _local_repair_review(
             llm_result.revisedText,
             repair_edits,
         )
-        summary.append("Strict repair: 감사 지적 항목만 원문 기준으로 부분 복원했습니다.")
+        summary.append("Audit repair: 감사 지적 항목만 원문 기준으로 부분 복원했습니다.")
         warnings = [f"감사 지적 {len(applied)}건을 로컬에서 부분 복원했습니다."] if applied else []
         if unresolved:
             warnings.append(
@@ -437,7 +401,7 @@ def _local_repair_review(
             outputTokens=0,
         )
 
-    summary.append("Strict repair: 감사 단계에서 복원할 항목이 없어 초안을 유지했습니다.")
+    summary.append("Audit repair: 감사 단계에서 복원할 항목이 없어 초안을 유지했습니다.")
     return StrictReviewResult(
         revisedText=llm_result.revisedText,
         changes=llm_result.changes,
@@ -515,7 +479,7 @@ def _clean_repaired_text(text: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
-def _strict_audit_requires_rollback(audit_result: AuditResult) -> bool:
+def _audit_requires_preservation_repair(audit_result: AuditResult) -> bool:
     return audit_result.rollbackRequired > 0 or any(
         _flagged_edit_blocks(edit) for edit in audit_result.flaggedEdits
     )
@@ -527,7 +491,7 @@ def _flagged_edit_blocks(edit: FlaggedEdit) -> bool:
     )
 
 
-def _strict_completion_warnings(
+def _completion_warnings(
     request: RewriteRequest,
     revised_text: str,
     model_warnings: list[str] | None = None,
@@ -536,30 +500,30 @@ def _strict_completion_warnings(
     original = request.text.strip()
     revised = revised_text.strip()
     if not revised:
-        warnings.append("Strict 결과가 비어 있어 완성도 검증을 통과하지 못했습니다.")
+        warnings.append("Rewrite 결과가 비어 있어 완성도 검증을 통과하지 못했습니다.")
         return warnings
 
     if _model_reports_incomplete(model_warnings or []):
-        warnings.append("Strict 결과가 중간에 잘렸거나 불완전하다는 감사 신호가 감지됐습니다.")
+        warnings.append("Rewrite 결과가 중간에 잘렸거나 불완전하다는 감사 신호가 감지됐습니다.")
 
     if len(original) >= 200:
         length_ratio = len(revised) / max(len(original), 1)
         if length_ratio < 0.60:
-            warnings.append("Strict 결과가 원문 대비 지나치게 짧아 누락 또는 출력 잘림 가능성이 큽니다.")
+            warnings.append("Rewrite 결과가 원문 대비 지나치게 짧아 누락 또는 출력 잘림 가능성이 큽니다.")
 
         original_sentences = split_sentences(original)
         revised_sentences = split_sentences(revised)
         if len(original_sentences) >= 4 and len(revised_sentences) / max(len(original_sentences), 1) < 0.50:
-            warnings.append("Strict 결과의 문장 커버리지가 원문 대비 낮아 전체 내용을 반영하지 못했을 수 있습니다.")
+            warnings.append("Rewrite 결과의 문장 커버리지가 원문 대비 낮아 전체 내용을 반영하지 못했을 수 있습니다.")
 
         if request.preserve_formatting:
             original_paragraphs = _paragraphs(original)
             revised_paragraphs = _paragraphs(revised)
             if len(original_paragraphs) >= 3 and len(revised_paragraphs) / max(len(original_paragraphs), 1) < 0.50:
-                warnings.append("Strict 결과의 문단 커버리지가 원문 대비 낮아 일부 문단이 누락됐을 수 있습니다.")
+                warnings.append("Rewrite 결과의 문단 커버리지가 원문 대비 낮아 일부 문단이 누락됐을 수 있습니다.")
 
     if _looks_cut_off_mid_sentence(original, revised):
-        warnings.append("Strict 결과가 문장 중간에서 끝난 것으로 보여 완성도 검증을 통과하지 못했습니다.")
+        warnings.append("Rewrite 결과가 문장 중간에서 끝난 것으로 보여 완성도 검증을 통과하지 못했습니다.")
 
     return _dedupe(warnings)
 
@@ -580,8 +544,8 @@ def _model_reports_incomplete(warnings: list[str]) -> bool:
     return any(_INCOMPLETE_WARNING_RE.search(warning) for warning in warnings)
 
 
-def _is_strict_completion_warning(warning: str) -> bool:
-    return warning.startswith("Strict 결과가") or _INCOMPLETE_WARNING_RE.search(warning) is not None
+def _is_completion_warning(warning: str) -> bool:
+    return warning.startswith(("Rewrite 결과가", "Strict 결과가")) or _INCOMPLETE_WARNING_RE.search(warning) is not None
 
 
 def _dedupe(values: list[str]) -> list[str]:

@@ -2,6 +2,7 @@ import json
 import re
 from typing import Any
 
+from humanize_core.im_not_ai.preservation import exact_preserve_targets as build_exact_preserve_targets
 from humanize_core.im_not_ai.resources import strict_rules
 from humanize_core.im_not_ai.schemas import AuditResult
 from humanize_core.schemas import RewriteRequest
@@ -15,16 +16,6 @@ _REWRITE_STRUCTURED_OUTPUT_CONTRACT = [
     "charCountAfter must match revisedText length, not the length of a change snippet.",
     "summary may describe what changed, but it must not be the only place that contains the completed rewrite.",
 ]
-_DATE_RE = re.compile(r"\d{4}\s*년|\d{1,2}\s*월|\d{1,2}\s*일|\d{4}-\d{1,2}-\d{1,2}")
-_NUMBER_UNIT_RE = re.compile(
-    r"\d[\d,]*(?:\.\d+)?\s*(?:%|퍼센트|원|달러|명|건|개|회|년|월|일|시간|분|초|kg|g|km|m|cm|GB|MB|KB)?"
-)
-_QUOTE_RE = re.compile(r'"[^"]{1,300}"|“[^”]{1,300}”|‘[^’]{1,300}’|\'[^\']{1,300}\'')
-_URL_RE = re.compile(r"https?://[^\s)>\"]+|www\.[^\s)>\"]+")
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
-_CODE_SPAN_RE = re.compile(r"`[^`\n]{1,160}`")
-
-
 def rewrite_system_prompt() -> str:
     return (
         "You are the backend port of the im-not-ai Korean business rewrite engine. "
@@ -216,30 +207,7 @@ def rewrite_guidance(request: RewriteRequest) -> dict[str, Any]:
 
 
 def exact_preserve_targets(request: RewriteRequest) -> dict[str, list[str]]:
-    text = request.text
-    return {
-        "protected_terms": _unique([term for term in request.protected_terms if term in text]),
-        "numbers_and_units": _regex_values(_NUMBER_UNIT_RE, text),
-        "dates": _regex_values(_DATE_RE, text),
-        "direct_quotes": _regex_values(_QUOTE_RE, text),
-        "urls": _regex_values(_URL_RE, text),
-        "emails": _regex_values(_EMAIL_RE, text),
-        "code_spans": _regex_values(_CODE_SPAN_RE, text),
-    }
-
-
-def _regex_values(pattern: re.Pattern[str], text: str) -> list[str]:
-    return _unique([match.group(0) for match in pattern.finditer(text) if match.group(0).strip()])
-
-
-def _unique(values: list[str]) -> list[str]:
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        if value and value not in seen:
-            deduped.append(value)
-            seen.add(value)
-    return deduped
+    return build_exact_preserve_targets(request.text, request.protected_terms)
 
 
 def _user_intent_guidance(user_intent: str) -> str:
