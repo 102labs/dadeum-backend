@@ -3,8 +3,12 @@ services:
     build: .
     env_file:
       - .env
+    environment:
+      HUMANIZE_JOB_STORE_PATH: /data/humanize_jobs.sqlite3
     expose:
       - "8000"
+    volumes:
+      - humanize-core-data:/data
     restart: unless-stopped
 
   caddy:
@@ -17,3 +21,5 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     restart: unless-stopped
 
+volumes:
+  humanize-core-data:

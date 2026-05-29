@@ -21,6 +21,9 @@ class LLMResponseError(RuntimeError):
     pass
 
 
+MAX_OUTPUT_TOKENS = 20_000
+
+
 class RewriteLLM(Protocol):
     async def rewrite(self, request: RewriteRequest) -> LLMRewriteResult:
         ...
@@ -60,6 +63,7 @@ class OpenAIRewriteLLM:
             model=self.model_name,
             instructions=prompts.rewrite_system_prompt(),
             input=prompts.rewrite_user_prompt(request, HumanizeContext().model_dump()),
+            max_output_tokens=MAX_OUTPUT_TOKENS,
             text={"format": _openai_rewrite_text_format()},
         )
         content = _extract_openai_output_text(response)
@@ -84,7 +88,7 @@ class AnthropicRewriteLLM:
         client = AsyncAnthropic(api_key=self.api_key)
         response = await client.messages.create(
             model=self.model_name,
-            max_tokens=4096,
+            max_tokens=MAX_OUTPUT_TOKENS,
             temperature=0.2,
             system=prompts.rewrite_system_prompt(),
             messages=[{"role": "user", "content": prompts.rewrite_user_prompt(request, HumanizeContext().model_dump())}],
@@ -155,7 +159,7 @@ class OpenRouterRewriteLLM:
             result_type=RewriteResult,
             system=prompts.rewrite_system_prompt(),
             user=prompts.rewrite_user_prompt(request, context),
-            max_tokens=5000,
+            max_tokens=MAX_OUTPUT_TOKENS,
         )
 
     async def audit(
@@ -171,7 +175,7 @@ class OpenRouterRewriteLLM:
             result_type=AuditResult,
             system=prompts.audit_system_prompt(),
             user=prompts.audit_user_prompt(request, context, revised_text, changes),
-            max_tokens=3000,
+            max_tokens=MAX_OUTPUT_TOKENS,
         )
 
     async def review(
@@ -183,7 +187,7 @@ class OpenRouterRewriteLLM:
     ) -> StrictReviewResult:
         return await self._chat_structured(
             models=self.review_models,
-            schema_name="strict_review_result",
+            schema_name="preservation_review_result",
             result_type=StrictReviewResult,
             system=prompts.review_system_prompt(),
             user=prompts.review_user_prompt(
@@ -192,7 +196,7 @@ class OpenRouterRewriteLLM:
                 revised_text,
                 audit_result,
             ),
-            max_tokens=6000,
+            max_tokens=MAX_OUTPUT_TOKENS,
         )
 
     async def _chat_structured(
@@ -433,7 +437,7 @@ def _stub_summary(request: RewriteRequest) -> str:
     }[request.tone]
     intent = " 사용자 요청 방향을 반영했습니다." if request.user_intent.strip() else ""
     formatting = "형식을 보존했습니다." if request.preserve_formatting else "필요한 공백을 정리했습니다."
-    return f"단일 strict 기준으로 {tone}을 적용했습니다.{intent} {formatting}"
+    return f"단일 윤문 기준으로 {tone}을 적용했습니다.{intent} {formatting}"
 
 
 def _openai_rewrite_text_format() -> dict[str, Any]:

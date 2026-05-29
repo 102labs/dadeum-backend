@@ -11,6 +11,10 @@
     reverse_proxy humanize-core:8000
   }
 
+  @rewrite_jobs path /v1/rewrite-jobs*
+  handle @rewrite_jobs {
+    reverse_proxy humanize-core:8000
+  }
+
   respond 404
 }
-

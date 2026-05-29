@@ -36,7 +36,14 @@ class Settings(BaseSettings):
     )
     core_api_key: str = Field(default="", alias="HUMANIZE_CORE_API_KEY")
     signing_secret: str = Field(default="", alias="HUMANIZE_CORE_SIGNING_SECRET")
-    max_chars: int = Field(default=10_000, alias="HUMANIZE_MAX_CHARS")
+    max_chars: int = Field(default=5_000, alias="HUMANIZE_MAX_CHARS")
+    job_store_path: str = Field(default="humanize_jobs.sqlite3", alias="HUMANIZE_JOB_STORE_PATH")
+    job_encryption_key: str | None = Field(default=None, alias="HUMANIZE_JOB_ENCRYPTION_KEY")
+    job_worker_enabled: bool = Field(default=True, alias="HUMANIZE_JOB_WORKER_ENABLED")
+    job_poll_interval_seconds: float = Field(default=1.0, alias="HUMANIZE_JOB_POLL_INTERVAL_SECONDS")
+    job_lock_seconds: int = Field(default=600, alias="HUMANIZE_JOB_LOCK_SECONDS")
+    job_retention_seconds: int = Field(default=86_400, alias="HUMANIZE_JOB_RETENTION_SECONDS")
+    job_max_attempts: int = Field(default=2, alias="HUMANIZE_JOB_MAX_ATTEMPTS")
     signature_tolerance_seconds: int = 300
 
     model_config = SettingsConfigDict(

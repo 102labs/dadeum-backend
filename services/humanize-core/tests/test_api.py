@@ -1,7 +1,9 @@
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
+from pathlib import Path
 import sys
 import time
 from types import SimpleNamespace
@@ -30,6 +32,7 @@ from humanize_core.im_not_ai.schemas import (
     StrictReviewResult,
 )
 from humanize_core.llm import (
+    MAX_OUTPUT_TOKENS,
     OpenAIRewriteLLM,
     OpenRouterRewriteLLM,
     StubRewriteLLM,
@@ -40,14 +43,18 @@ from humanize_core.schemas import Change
 from humanize_core.schemas import RewriteRequest as RewriteRequestForTest
 
 
-def _settings() -> Settings:
-    return Settings(
-        core_api_key="test-core-key",
-        signing_secret="test-signing-secret",
-        model_provider="stub",
-        model_name="stub",
-        max_chars=10_000,
-    )
+def _settings(**overrides) -> Settings:
+    values = {
+        "core_api_key": "test-core-key",
+        "signing_secret": "test-signing-secret",
+        "model_provider": "stub",
+        "model_name": "stub",
+        "max_chars": 5_000,
+        "job_store_path": ":memory:",
+        "job_worker_enabled": False,
+    }
+    values.update(overrides)
+    return Settings(**values)
 
 
 def _payload(**overrides):
@@ -196,7 +203,7 @@ def test_rewrite_request_defaults_match_new_contract():
     request = RewriteRequestForTest.model_validate({"text": "문장을 정리합니다."})
 
     assert request.user_intent == ""
-    assert request.rewrite_mode == "strict"
+    assert request.rewrite_mode == "fast"
     assert request.tone == "keep"
     assert request.protected_terms == []
     assert request.max_rounds == 1
@@ -218,7 +225,7 @@ def test_rewrite_request_normalizes_intent_and_protected_terms():
 
 def test_rewrite_success_returns_structured_response():
     client = _client()
-    raw_body = json.dumps(_payload(), ensure_ascii=False).encode("utf-8")
+    raw_body = json.dumps(_payload(rewrite_mode="fast"), ensure_ascii=False).encode("utf-8")
     headers = _signed_headers(raw_body)
 
     response = client.post("/v1/rewrite", content=raw_body, headers=headers)
@@ -238,6 +245,7 @@ def test_stub_rewrite_reflects_user_selected_controls():
         _payload(
             text="보고 문장",
             user_intent="더 단정하게 정리",
+            rewrite_mode="fast",
             tone="formal",
             preserve_formatting=True,
         ),
@@ -256,7 +264,7 @@ def test_stub_rewrite_reflects_user_selected_controls():
 
 
 async def test_long_compat_request_uses_single_rewrite_path():
-    text = "보고 문장입니다. " * 801
+    text = "보고 문장입니다. " * 500
     request = RewriteRequestForTest.model_validate(_payload(text=text, rewrite_mode="fast", max_rounds=3))
 
     class CapturingRewriteLLM:
@@ -282,41 +290,51 @@ async def test_long_compat_request_uses_single_rewrite_path():
     llm = CapturingRewriteLLM()
     response = await RewriteGraphRunner(_settings(), llm).run(request)
 
-    assert len(text) > 8_000
+    assert 4_000 < len(text) <= 5_000
     assert llm.rewrite_calls == 1
     assert response.usage.rounds == 1
     assert not response.warnings
 
 
-def test_valid_strict_request_uses_structured_response():
+def test_valid_strict_request_returns_accepted_job():
     client = _client()
     raw_body = json.dumps(_payload(rewrite_mode="strict"), ensure_ascii=False).encode("utf-8")
     headers = _signed_headers(raw_body)
 
     response = client.post("/v1/rewrite", content=raw_body, headers=headers)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     data = response.json()
-    assert data["revisedText"]
-    assert data["changes"]
-    assert data["usage"]["rounds"] >= 1
+    assert data["jobId"]
+    assert data["requestId"] == "req_test"
+    assert data["status"] == "queued"
+    assert "revisedText" not in data
 
 
 def test_strict_request_ignores_max_rounds_and_runs_single_routine():
-    client = _client()
+    app = create_app(_settings())
     text = "결론적으로 성과를 냈습니다. 따라서 개선됩니다. 이를 통해 정리합니다. 그러므로 유지합니다."
     raw_body = json.dumps(_payload(text=text, rewrite_mode="strict", max_rounds=3), ensure_ascii=False).encode("utf-8")
     headers = _signed_headers(raw_body)
 
-    response = client.post("/v1/rewrite", content=raw_body, headers=headers)
+    with TestClient(app) as client:
+        response = client.post("/v1/rewrite", content=raw_body, headers=headers)
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["usage"]["rounds"] == 1
-    assert not any("최대 라운드" in warning for warning in data["warnings"])
+        assert response.status_code == 202
+        job_id = response.json()["jobId"]
+        asyncio.run(app.state.job_manager.process_next())
+
+        status_headers = _signed_headers(b"", request_id="req_status")
+        status_response = client.get(f"/v1/rewrite-jobs/{job_id}", headers=status_headers)
+
+    assert status_response.status_code == 200
+    data = status_response.json()
+    assert data["status"] == "succeeded"
+    assert data["result"]["usage"]["rounds"] == 1
+    assert not any("최대 라운드" in warning for warning in data["result"]["warnings"])
 
 
-def test_strict_request_defaults_to_single_round_when_max_rounds_omitted():
+def test_strict_request_defaults_to_async_job_when_max_rounds_omitted():
     client = _client()
     text = "결론적으로 성과를 냈습니다. 따라서 개선됩니다. 이를 통해 정리합니다. 그러므로 유지합니다."
     body = _payload(text=text, rewrite_mode="strict")
@@ -326,10 +344,58 @@ def test_strict_request_defaults_to_single_round_when_max_rounds_omitted():
 
     response = client.post("/v1/rewrite", content=raw_body, headers=headers)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     data = response.json()
-    assert data["usage"]["rounds"] == 1
-    assert not any("최대 라운드" in warning for warning in data["warnings"])
+    assert data["status"] == "queued"
+
+
+def test_job_store_reopens_after_app_lifespan_restart(tmp_path):
+    app = create_app(_settings(job_store_path=str(tmp_path / "jobs.sqlite3")))
+    raw_body = json.dumps(_payload(rewrite_mode="strict"), ensure_ascii=False).encode("utf-8")
+    headers = _signed_headers(raw_body)
+
+    with TestClient(app) as client:
+        response = client.post("/v1/rewrite", content=raw_body, headers=headers)
+        assert response.status_code == 202
+        job_id = response.json()["jobId"]
+
+    with TestClient(app) as client:
+        status_headers = _signed_headers(b"", request_id="req_lifespan_status")
+        status_response = client.get(f"/v1/rewrite-jobs/{job_id}", headers=status_headers)
+
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "queued"
+
+
+def test_strict_job_worker_processes_queued_jobs(tmp_path):
+    app = create_app(
+        _settings(
+            job_store_path=str(tmp_path / "jobs.sqlite3"),
+            job_worker_enabled=True,
+            job_poll_interval_seconds=0.01,
+        )
+    )
+    raw_body = json.dumps(_payload(rewrite_mode="strict"), ensure_ascii=False).encode("utf-8")
+    headers = _signed_headers(raw_body)
+
+    with TestClient(app) as client:
+        response = client.post("/v1/rewrite", content=raw_body, headers=headers)
+        assert response.status_code == 202
+        job_id = response.json()["jobId"]
+
+        status_response = None
+        for index in range(50):
+            status_headers = _signed_headers(b"", request_id=f"req_worker_status_{index}")
+            status_response = client.get(f"/v1/rewrite-jobs/{job_id}", headers=status_headers)
+            if status_response.json()["status"] == "succeeded":
+                break
+            time.sleep(0.01)
+
+    assert status_response is not None
+    assert status_response.status_code == 200
+    data = status_response.json()
+    assert data["status"] == "succeeded"
+    assert data["result"]["usage"]["rounds"] == 1
 
 
 def test_prompts_pass_user_selected_rewrite_controls():
@@ -352,7 +418,7 @@ def test_prompts_pass_user_selected_rewrite_controls():
 
     assert payload["settings"] == {
         "user_intent": "문장을 더 부드럽게 다듬어 주세요.",
-        "mode_policy": "single_fast_plus_rewrite_with_preservation_audit",
+        "mode_policy": "single_active_rewrite_with_preservation_audit",
         "tone": "friendly",
         "preserve_formatting": True,
     }
@@ -364,7 +430,7 @@ def test_prompts_pass_user_selected_rewrite_controls():
     assert "줄바꿈" in payload["rewrite_guidance"]["formatting"]
 
 
-def test_rewrite_prompt_runs_assertive_fast_plus_single_pass():
+def test_rewrite_prompt_runs_active_rulebook_single_pass():
     request = RewriteRequestForTest.model_validate(
         _payload(
             text="2026년 이 기능은 데이터를 통해 성장을 지원합니다. 전략적 실행성과 구조화가 필요합니다.",
@@ -380,20 +446,22 @@ def test_rewrite_prompt_runs_assertive_fast_plus_single_pass():
     assert "strict detect" not in system_prompt
     assert "strict" not in system_prompt.lower()
     assert "strict" not in rendered_payload.lower()
-    assert "fast rewrite pass" in system_prompt
+    assert "active rewrite pass" in system_prompt
     assert "Your job is rewriting, not auditing" in system_prompt
+    assert "old fast mode" not in system_prompt
     assert "style_rules" not in payload
     assert "rewriting_playbook" not in payload
     assert "findings" not in payload
     assert "rewrite_strategy" in payload
-    assert payload["rewrite_pass"] == "assertive_fast_plus_single_pass"
+    assert payload["rewrite_pass"] == "active_rulebook_single_pass"
     assert "must_edit_policy" in payload
     assert any("원문을 그대로 반환하는 것은 rewrite 실패" in item for item in payload["must_edit_policy"])
+    assert any("최소 하나 이상의 안전한 표현 개선" in item for item in payload["must_edit_policy"])
     assert "completion_contract" in payload
     assert "structured_output_contract" in payload
     assert "im_not_ai_quick_rules" in payload
     assert "exact_preserve_targets" not in payload
-    assert "fast_plus_single_full_pass" in payload["rewrite_strategy"]
+    assert "active_rulebook_single_pass" in payload["rewrite_strategy"]
     assert payload["completion_contract"]["originalCharCount"] == len(request.text)
     assert "complete rewritten passage" in payload["completion_contract"]["scope"]
     assert any("revisedText is the single canonical final answer" in item for item in payload["structured_output_contract"])
@@ -403,7 +471,8 @@ def test_rewrite_prompt_runs_assertive_fast_plus_single_pass():
     assert "문장 흐름" in rendered_payload
     assert "리듬" in rendered_payload
     assert "명확성" in rendered_payload
-    assert "fast mode보다 한 단계 더 적극적으로" in payload["rewrite_guidance"]["rewrite_policy"]
+    assert "룰북을 적극 적용" in payload["rewrite_guidance"]["rewrite_policy"]
+    assert "fast mode" not in rendered_payload
 
 
 def test_review_prompt_applies_audit_corrections_and_reaudits():
@@ -448,7 +517,7 @@ def test_review_prompt_applies_audit_corrections_and_reaudits():
     assert "finalAuditStatus" in rendered
 
 
-def test_rewrite_prompt_embeds_strict_rules_without_detect_stage():
+def test_rewrite_prompt_embeds_active_rules_without_detect_stage():
     request = RewriteRequestForTest.model_validate(
         _payload(
             text="결론적으로 성과를 통해 결과를 냈습니다.",
@@ -461,7 +530,7 @@ def test_rewrite_prompt_embeds_strict_rules_without_detect_stage():
 
     assert not hasattr(prompts, "detect_user_prompt")
     assert not hasattr(prompts, "strict_rewrite_user_prompt")
-    assert rewrite_payload["rulebook"] == "fast-rewrite-rules"
+    assert rewrite_payload["rulebook"] == "active-rewrite-rules"
     assert "im_not_ai_quick_rules" in rewrite_payload
     assert "strict_rules" not in rewrite_payload
     assert "A-1" in rewrite_payload["im_not_ai_quick_rules"]
@@ -472,7 +541,7 @@ def test_rewrite_prompt_embeds_strict_rules_without_detect_stage():
     assert hasattr(resources, "strict_rules")
 
 
-def test_rewrite_audit_review_prompts_follow_single_strict_routine():
+def test_rewrite_audit_review_prompts_follow_single_routine():
     request = RewriteRequestForTest.model_validate(
         _payload(
             text=(
@@ -1320,7 +1389,7 @@ async def test_strict_review_can_return_safe_final_candidate_without_rewrite_loo
 
 def test_text_above_core_max_chars_returns_422():
     client = _client()
-    raw_body = json.dumps(_payload(text="가" * 10_001), ensure_ascii=False).encode("utf-8")
+    raw_body = json.dumps(_payload(text="가" * 5_001), ensure_ascii=False).encode("utf-8")
     headers = _signed_headers(raw_body)
 
     response = client.post("/v1/rewrite", content=raw_body, headers=headers)
@@ -1331,7 +1400,7 @@ def test_text_above_core_max_chars_returns_422():
 def test_logs_do_not_include_source_or_rewrite_result(caplog):
     client = _client()
     source = "PRIVACY_SENTINEL_2026 원문입니다."
-    raw_body = json.dumps(_payload(text=source), ensure_ascii=False).encode("utf-8")
+    raw_body = json.dumps(_payload(text=source, rewrite_mode="fast"), ensure_ascii=False).encode("utf-8")
     headers = _signed_headers(raw_body)
 
     with caplog.at_level(logging.INFO, logger="humanize_core"):
@@ -1341,6 +1410,64 @@ def test_logs_do_not_include_source_or_rewrite_result(caplog):
     revised = response.json()["revisedText"]
     assert source not in caplog.text
     assert revised not in caplog.text
+
+
+def test_strict_job_error_logs_do_not_include_source_text(tmp_path, caplog):
+    source = "ASYNC_ERROR_PRIVACY_SENTINEL_2026 원문입니다."
+
+    class FailingGraphRunner:
+        async def run(self, request):
+            raise RuntimeError(f"provider failed while handling {request.text}")
+
+    app = create_app(
+        _settings(job_store_path=str(tmp_path / "jobs.sqlite3")),
+        graph_runner=FailingGraphRunner(),
+    )
+    raw_body = json.dumps(_payload(text=source, rewrite_mode="strict"), ensure_ascii=False).encode("utf-8")
+    headers = _signed_headers(raw_body)
+
+    with TestClient(app) as client:
+        response = client.post("/v1/rewrite", content=raw_body, headers=headers)
+        assert response.status_code == 202
+
+        with caplog.at_level(logging.ERROR, logger="humanize_core"):
+            asyncio.run(app.state.job_manager.process_next())
+
+    assert source not in caplog.text
+    assert "provider failed" not in caplog.text
+
+
+def test_strict_job_store_does_not_persist_plaintext_payload_or_result(tmp_path):
+    source = "ASYNC_PRIVACY_SENTINEL_2026 원문입니다."
+    store_path = tmp_path / "jobs.sqlite3"
+    app = create_app(_settings(job_store_path=str(store_path)))
+    raw_body = json.dumps(_payload(text=source, rewrite_mode="strict"), ensure_ascii=False).encode("utf-8")
+    headers = _signed_headers(raw_body)
+
+    with TestClient(app) as client:
+        response = client.post("/v1/rewrite", content=raw_body, headers=headers)
+        assert response.status_code == 202
+        job_id = response.json()["jobId"]
+
+        db_bytes = _job_store_bytes(store_path)
+        assert source.encode("utf-8") not in db_bytes
+
+        asyncio.run(app.state.job_manager.process_next())
+        status_headers = _signed_headers(b"", request_id="req_privacy_status")
+        status_response = client.get(f"/v1/rewrite-jobs/{job_id}", headers=status_headers)
+
+    assert status_response.status_code == 200
+    data = status_response.json()
+    assert data["status"] == "succeeded"
+    assert data["result"]["revisedText"] == source
+    db_bytes = _job_store_bytes(store_path)
+    assert source.encode("utf-8") not in db_bytes
+
+
+def _job_store_bytes(store_path: Path) -> bytes:
+    paths = [store_path, Path(f"{store_path}-wal"), Path(f"{store_path}-shm")]
+    chunks = [path.read_bytes() for path in paths if path.exists()]
+    return b"".join(chunks)
 
 
 def test_openai_text_format_uses_strict_json_schema():
@@ -1402,6 +1529,7 @@ async def test_openai_rewrite_uses_responses_structured_output(monkeypatch):
     assert result.inputTokens == 11
     assert result.outputTokens == 7
     assert calls[0]["model"] == "gpt-5-mini"
+    assert calls[0]["max_output_tokens"] == MAX_OUTPUT_TOKENS
     assert calls[0]["text"]["format"]["type"] == "json_schema"
     assert calls[0]["text"]["format"]["strict"] is True
     assert "response_format" not in calls[0]
@@ -1481,6 +1609,7 @@ async def test_openrouter_rewrite_once_uses_json_schema_and_usage(monkeypatch):
     assert init_calls[0]["base_url"] == "https://openrouter.ai/api/v1"
     assert init_calls[0]["default_headers"]["X-Title"] == "Test App"
     assert calls[0]["model"] == "openai/gpt-5-mini"
+    assert calls[0]["max_tokens"] == MAX_OUTPUT_TOKENS
     assert calls[0]["response_format"]["type"] == "json_schema"
     assert calls[0]["response_format"]["json_schema"]["strict"] is True
     assert calls[0]["extra_body"]["provider"]["require_parameters"] is True
@@ -1546,6 +1675,7 @@ async def test_openrouter_rewrite_once_omits_temperature_for_parameter_routing(m
     assert result.inputTokens == 5
     assert result.outputTokens == 3
     assert calls[0]["model"] == "openai/gpt-5-mini"
+    assert calls[0]["max_tokens"] == MAX_OUTPUT_TOKENS
     assert calls[0]["response_format"]["type"] == "json_schema"
     assert calls[0]["extra_body"]["provider"]["require_parameters"] is True
     assert "temperature" not in calls[0]
@@ -1569,6 +1699,14 @@ def test_openrouter_schema_marks_pydantic_default_fields_required():
     assert "end" in finding_schema["required"]
 
     assert schema["properties"]["residualFindings"]["items"] == {"$ref": "#/$defs/Finding"}
+
+    review_response_format = _openrouter_response_format(
+        "preservation_review_result",
+        StrictReviewResult.model_json_schema(),
+    )
+    rendered_review_format = json.dumps(review_response_format)
+    assert review_response_format["json_schema"]["name"] == "preservation_review_result"
+    assert "strict_review_result" not in rendered_review_format
 
 
 def test_metrics_v2_computes_im_not_ai_signal_keys():

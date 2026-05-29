@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -14,6 +15,7 @@ ChangeType = Literal[
     "meaning",
 ]
 RiskLevel = Literal["low", "medium", "high"]
+RewriteJobStatusValue = Literal["queued", "running", "succeeded", "failed", "cancelled", "expired"]
 
 
 class RewriteRequest(BaseModel):
@@ -21,7 +23,7 @@ class RewriteRequest(BaseModel):
 
     text: str = Field(min_length=1)
     user_intent: str = ""
-    rewrite_mode: RewriteMode = "strict"
+    rewrite_mode: RewriteMode = "fast"
     tone: Tone = "keep"
     protected_terms: list[str] = Field(default_factory=list)
     max_rounds: int = Field(default=1, ge=1, le=3)
@@ -67,3 +69,27 @@ class LLMRewriteResult(BaseModel):
     summary: list[str]
     inputTokens: int = 0
     outputTokens: int = 0
+
+
+class RewriteJobAccepted(BaseModel):
+    jobId: str
+    requestId: str
+    status: RewriteJobStatusValue
+    pollAfterMs: int = 1000
+
+
+class RewriteJobStatus(BaseModel):
+    jobId: str
+    requestId: str
+    status: RewriteJobStatusValue
+    rewriteMode: RewriteMode
+    textLength: int
+    attempts: int
+    maxAttempts: int
+    createdAt: datetime
+    expiresAt: datetime
+    startedAt: datetime | None = None
+    completedAt: datetime | None = None
+    latencyMs: int | None = None
+    errorCode: str | None = None
+    result: RewriteResponse | None = None

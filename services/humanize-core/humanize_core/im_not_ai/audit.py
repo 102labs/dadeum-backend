@@ -482,7 +482,7 @@ def quality_grade(
     if s1_count >= 3 or rate > 50:
         return "D", "S1 잔존 3건 이상이거나 변경률 50% 초과입니다."
     if s1_count >= 1 or passed <= max(len(checks) - 2, 0):
-        return "C", "S1 잔존 또는 자체검증 통과 항목 부족으로 strict 모드 권고 대상입니다."
+        return "C", "S1 잔존 또는 자체검증 통과 항목 부족으로 추가 검토 권고 대상입니다."
     if s2_count <= 2 and 10 <= rate <= 25 and passed == len(checks):
         return "A", "S1 0건, S2 2건 이하, 변경률 10~25%, 자체검증 전 항목 통과입니다."
     if s2_count <= 4 and passed >= max(len(checks) - 1, 0):

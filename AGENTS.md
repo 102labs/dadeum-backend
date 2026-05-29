@@ -11,7 +11,7 @@ This repository is building the backend side of a short business writing rewrite
 - Next.js SaaS app: browser-facing proxy, auth, subscription checks, usage limits, UI, and request signing.
 - Lightsail Core: internal rewrite engine, server-to-server request validation, LLM orchestration, LangGraph pipeline, semantic preservation audit, and structured rewrite response.
 
-The v1 privacy rule is strict: do not persist source text, rewritten text, diff body, finding body, or raw LLM request/response body.
+The privacy rule is strict for plaintext bodies. Fast synchronous requests must not persist source text, rewritten text, diff body, finding body, or raw LLM request/response body. Strict asynchronous jobs may persist only encrypted source payloads and encrypted final results with a short TTL; plaintext bodies, raw LLM request/response bodies, and decrypted values must never be written to logs, analytics, or non-encrypted database columns.
 
 ## Current Repository Focus
 
@@ -40,6 +40,8 @@ Required endpoints:
 ```text
 GET /health
 POST /v1/rewrite
+GET /v1/rewrite-jobs/{jobId}
+DELETE /v1/rewrite-jobs/{jobId}
 ```
 
 `GET /health` returns:
@@ -50,7 +52,7 @@ POST /v1/rewrite
 }
 ```
 
-`POST /v1/rewrite` is internal only. It must be called by the Next.js server, not directly by a browser.
+`POST /v1/rewrite` and `/v1/rewrite-jobs/*` are internal only. They must be called by the Next.js server, not directly by a browser.
 
 ## Rewrite Request Contract
 
@@ -81,11 +83,11 @@ Next.js should build this Core request by combining the browser-provided text an
 }
 ```
 
-Core infers any internal genre hints from the text itself. `user_intent`, `rewrite_mode`, `tone`, `protected_terms`, `max_rounds`, and `preserve_formatting` are request controls and must shape rewrite strength, tone, preservation, review depth, and formatting behavior. Strict mode uses the requested `max_rounds` value up to 3 rounds; fast mode uses 1 round.
+Core accepts at most 5,000 characters per request. Core infers any internal genre hints from the text itself. `user_intent`, `rewrite_mode`, `tone`, `protected_terms`, `max_rounds`, and `preserve_formatting` are request controls and must shape rewrite strength, tone, preservation, review depth, and formatting behavior. Fast mode returns synchronously from `POST /v1/rewrite`. Strict mode is durable asynchronous: `POST /v1/rewrite` returns `202 Accepted` with a job id, and the Next.js server polls `GET /v1/rewrite-jobs/{jobId}`.
 
 ## Rewrite Response Contract
 
-Core returns:
+Fast synchronous Core requests and completed strict jobs return:
 
 ```json
 {
@@ -107,6 +109,17 @@ Core returns:
     "latencyMs": 8420,
     "rounds": 1
   }
+}
+```
+
+Strict `POST /v1/rewrite` requests return `202 Accepted` with:
+
+```json
+{
+  "jobId": "uuid",
+  "requestId": "req_...",
+  "status": "queued",
+  "pollAfterMs": 1000
 }
 ```
 
@@ -162,7 +175,10 @@ HUMANIZE_MODEL_PROVIDER
 HUMANIZE_MODEL_NAME
 HUMANIZE_CORE_API_KEY
 HUMANIZE_CORE_SIGNING_SECRET
-HUMANIZE_MAX_CHARS=10000
+HUMANIZE_MAX_CHARS=5000
+HUMANIZE_JOB_STORE_PATH
+HUMANIZE_JOB_ENCRYPTION_KEY
+HUMANIZE_JOB_RETENTION_SECONDS
 ```
 
 Local tests may use:
@@ -188,8 +204,9 @@ The Next.js SaaS app is responsible for:
 - Free/pro plan resolution.
 - Per-request character limit checks.
 - Daily/monthly usage checks.
-- Creating `rewrite_usage_events` without text bodies.
-- Signing and forwarding requests to Core.
+- Creating `rewrite_usage_events` without plaintext text bodies.
+- Signing and forwarding fast requests to Core.
+- Creating and polling strict rewrite jobs for asynchronous Core processing.
 - Updating usage events to `succeeded` or `failed`.
 
 Browser request type:
@@ -216,7 +233,7 @@ const rewritePlanLimits = {
     monthlyRequests: 30,
   },
   pro: {
-    maxCharsPerRequest: 10000,
+    maxCharsPerRequest: 5000,
     dailyRequests: 100,
     monthlyRequests: 1000,
   },
@@ -227,7 +244,7 @@ Active subscription means `pro`; no active subscription means `free`.
 
 ## Usage Event Table
 
-The SaaS app should create a body-free usage table:
+The SaaS app should create a plaintext-body-free usage table:
 
 ```sql
 create table public.rewrite_usage_events (
@@ -243,7 +260,7 @@ create table public.rewrite_usage_events (
 );
 ```
 
-Never store:
+Never store in plaintext:
 
 ```text
 원문
@@ -252,6 +269,8 @@ diff 본문
 finding 본문
 LLM raw request/response body
 ```
+
+Strict async job storage may contain encrypted source payloads and encrypted final results only for active processing and short result retrieval. Encrypted source payloads must be purged after terminal success or final failure. Encrypted results must expire by TTL or user deletion.
 
 ## Test Requirements
 
@@ -263,7 +282,10 @@ Lightsail Core tests must cover:
 - Expired timestamp returns `401`.
 - Body hash mismatch returns `401`.
 - Invalid enum returns `422`.
-- Valid request returns structured `RewriteResponse`.
+- Valid fast request returns structured `RewriteResponse`.
+- Strict request returns `202 Accepted` with a job id.
+- Strict job status returns result only after completion.
+- Strict job storage does not contain plaintext source text or rewritten text.
 - Logs do not include source text or rewritten text.
 
 Next.js tests should cover:
@@ -271,24 +293,20 @@ Next.js tests should cover:
 - Unauthenticated request returns `401`.
 - Free users above 3,000 chars are blocked before Core call.
 - Free users above daily or monthly limits receive `429`.
-- Pro users at or below 10,000 chars call Core.
+- Pro users at or below 5,000 chars call Core.
 - Core success updates usage event to `succeeded`.
 - Core failure updates usage event to `failed`.
-- Logs and DB do not contain source text or rewrite result.
+- Logs and non-encrypted DB columns do not contain source text or rewrite result.
 
 ## V1 Exclusions
 
 Do not implement these unless explicitly requested:
 
 ```text
-POST /v1/rewrite-jobs
-Redis
-queue/worker
-polling
 SSE streaming
 Team plan
 API key issuance
-body history storage
+plaintext body history storage
 ```
 
 ## Verification

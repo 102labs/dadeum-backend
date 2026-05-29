@@ -19,11 +19,11 @@ _REWRITE_STRUCTURED_OUTPUT_CONTRACT = [
 def rewrite_system_prompt() -> str:
     return (
         "You are the backend port of the im-not-ai Korean business rewrite engine. "
-        "Perform the fast rewrite pass: actively improve the whole Korean business passage in one call. "
+        "Perform an active rewrite pass: improve the whole Korean business passage in one call. "
         "Your job is rewriting, not auditing; a later audit will check preservation problems. "
-        "Apply the rulebook more assertively than the old fast mode: remove translationese, reduce repetition, improve word order, rhythm, transitions, and business clarity. "
+        "Apply the rulebook assertively: remove translationese, reduce repetition, improve word order, rhythm, transitions, and business clarity across the passage. "
         "Keep facts, numbers, dates, names, quotations, URLs, code, and register intact, but never use preservation as a reason to copy safe surrounding prose unchanged. "
-        "Unless the source is already polished and has no rulebook issues, revisedText must differ from the original with concrete wording edits. "
+        "revisedText must differ from the original with concrete wording edits whenever any safe expression can be improved. "
         "Use user_intent, tone, and preserve_formatting to choose tone and formatting. "
         "Do not add new claims, examples, metaphors, facts, or citations. "
         "Do not expose hidden reasoning. Return only JSON matching the schema."
@@ -33,21 +33,22 @@ def rewrite_system_prompt() -> str:
 def rewrite_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str:
     payload = {
         **_prompt_header("rewrite", request),
-        "rulebook": "fast-rewrite-rules",
-        "rewrite_pass": "assertive_fast_plus_single_pass",
+        "rulebook": "active-rewrite-rules",
+        "rewrite_pass": "active_rulebook_single_pass",
         "im_not_ai_quick_rules": strict_rules(),
-        "rewrite_strategy": "fast_plus_single_full_pass: old fast mode보다 한 단계 더 적극적으로 룰북을 적용해 원문 전체를 바로 윤문하고, 완성본 전체를 revisedText로 반환한다. 보존 감사는 다음 audit 단계가 담당한다.",
-        "rewrite_scope": "문장 흐름, 어순, 리듬, 연결, 명확성, 번역투, 반복 구조, AI 티 패턴을 전체 글 기준으로 적극 다듬되 원문의 의미와 정보량은 보존한다.",
+        "rewrite_strategy": "active_rulebook_single_pass: 룰북을 적극 적용해 원문 전체를 바로 윤문하고, 완성본 전체를 revisedText로 반환한다. 보존 감사는 다음 audit 단계가 담당한다.",
+        "rewrite_scope": "문장 흐름, 어순, 리듬, 연결, 명확성, 번역투, 반복 구조, AI 티 패턴을 전체 글 기준으로 적극 다듬고 여러 구간에서 실제 표현을 개선하되 원문의 의미와 정보량은 보존한다.",
         "must_edit_policy": [
-            "원문을 그대로 반환하는 것은 rewrite 실패다. 이미 사람이 쓴 완성도 높은 문장이고 룰북 수정 후보가 전혀 없을 때만 예외다.",
+            "원문을 그대로 반환하는 것은 rewrite 실패다.",
+            "보존 대상, 코드, 직접 인용만으로 이루어진 입력이 아니라면 최소 하나 이상의 안전한 표현 개선을 만든다.",
             "보존해야 하는 값은 그대로 두되, 그 주변 문장 흐름·어순·반복·번역투·장황한 연결은 적극적으로 다듬는다.",
             "수치·날짜·직접 인용이 있다는 이유로 전체 문장을 복사하지 않는다.",
             "일반 업무 설명문은 의미가 같아도 표현, 어순, 연결, 종결 중 최소 하나는 더 자연스럽고 간결하게 바뀌어야 한다.",
             "changes가 비어 있거나 revisedText가 원문과 같으면 실패 출력으로 간주한다.",
         ],
         "edit_intensity": {
-            "target": "보존이 안전한 일반 문장은 old fast mode보다 적극적인 15~35% 수준의 체감 변화가 나도록 다듬는다.",
-            "minimum": "S1/S2 신호, 반복 표현, 장황한 설명, 어색한 연결, 번역투가 하나라도 있으면 최소 1개 이상의 실질 수정이 있어야 한다.",
+            "target": "보존이 안전한 일반 문장은 20~40% 수준의 체감 변화가 나도록 적극 다듬는다.",
+            "minimum": "S1/S2 신호, 반복 표현, 장황한 설명, 어색한 연결, 번역투가 하나라도 있으면 해당 구간에 실질 수정이 있어야 한다.",
             "avoid": "새 정보 추가, 과한 마케팅 톤, 원문 구조 파괴, 인용·수치·날짜 변경",
         },
         "edit_examples": [
@@ -186,7 +187,7 @@ def _prompt_header(mode: str, request: RewriteRequest) -> dict[str, Any]:
 def request_settings(request: RewriteRequest) -> dict[str, Any]:
     return {
         "user_intent": request.user_intent,
-        "mode_policy": "single_fast_plus_rewrite_with_preservation_audit",
+        "mode_policy": "single_active_rewrite_with_preservation_audit",
         "tone": request.tone,
         "preserve_formatting": request.preserve_formatting,
     }
@@ -219,9 +220,9 @@ def _user_intent_guidance(user_intent: str) -> str:
 
 def _single_mode_guidance() -> str:
     return (
-        "단일 윤문 루틴이다. rewrite 단계는 fast mode보다 한 단계 더 적극적으로 룰북을 적용해 전체 글을 먼저 "
-        "자연스럽게 다듬고, 별도 감사 단계가 의미 변화와 보존 대상 변경을 검사한다. 보존이 안전한 문장은 "
-        "어순·연결·반복·번역투를 실제로 개선한다. 변경률은 품질 목표가 아니라 보존 위험 신호로만 본다."
+        "단일 윤문 루틴이다. rewrite 단계는 룰북을 적극 적용해 전체 글을 먼저 자연스럽게 다듬고, 별도 감사 단계가 "
+        "의미 변화와 보존 대상 변경을 검사한다. 보존이 안전한 문장은 어순·연결·반복·번역투를 실제로 개선한다. "
+        "변경률은 품질 목표가 아니라 보존 위험 신호로만 본다."
     )
 
 
@@ -230,7 +231,7 @@ def _tone_guidance(tone: str) -> str:
         return "격식 있는 비즈니스 문체로 조절한다. 예의 있고 단정한 종결, 과장 없는 전문적 표현을 사용한다."
     if tone == "friendly":
         return "친근하지만 업무 맥락을 해치지 않는 문체로 조절한다. 지나친 구어체, 감탄, 과장 표현은 피한다."
-    return "기존 톤과 격식을 유지한다. 톤을 새로 만들기보다 어색한 부분만 자연스럽게 정리한다."
+    return "기존 톤과 격식을 유지한다. 새 톤을 만들지 않되 어색한 표현, 반복, 장황한 연결은 적극적으로 정리한다."
 
 
 def _formatting_guidance(preserve_formatting: bool) -> str:
