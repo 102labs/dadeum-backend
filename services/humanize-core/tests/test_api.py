@@ -846,6 +846,65 @@ async def test_strict_change_rate_alone_is_review_signal_not_rollback():
     assert not any("원문을 반환" in warning for warning in response.warnings)
 
 
+async def test_strict_finalize_rebuilds_review_changes_for_exact_display_matching():
+    class UngroundedReviewChangesLLM:
+        async def rewrite(self, request):
+            raise AssertionError("strict graph should call node-specific methods")
+
+        async def detect(self, request, context):
+            return DetectionResult(sentenceCount=1)
+
+        async def rewrite_strict(self, request, context, detection):
+            return StrictRewriteResult(
+                revisedText="현대의 업무 환경은 빠르게 변하고 있으며, 조직은 이 변화에 효과적으로 대응해야 합니다.",
+                changes=[
+                    Change(
+                        original="현대의 업무 환경은 빠르게 변화하고 있으며",
+                        revised="현대의 업무 환경은 빠르게 변하고 있으며",
+                        reason="표현을 간결하게 다듬었습니다.",
+                        type="clarity",
+                        riskLevel="low",
+                    )
+                ],
+                summary=["초안을 작성했습니다."],
+            )
+
+        async def audit(self, request, context, revised_text, changes):
+            return AuditResult(status="full_pass", reason="보존 검사를 통과했습니다.")
+
+        async def review(self, request, context, detection, revised_text, audit_result, residual_detection):
+            return StrictReviewResult(
+                revisedText=revised_text,
+                changes=[
+                    Change(
+                        original="이러한 변화에 효과적으로 대응하기 위해 더 체계적인 접근이 필요합니다.",
+                        revised="이 변화에 효과적으로 대응해야 합니다.",
+                        reason="리뷰 단계에서 중간 초안 기준 변경을 보고했습니다.",
+                        type="clarity",
+                        riskLevel="low",
+                    )
+                ],
+                summary=["리뷰를 완료했습니다."],
+            )
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            text="현대의 업무 환경은 빠르게 변화하고 있으며, 조직은 이러한 변화에 효과적으로 대응해야 합니다.",
+            rewrite_mode="strict",
+            max_rounds=1,
+            protected_terms=[],
+        )
+    )
+
+    response = await RewriteGraphRunner(_settings(), UngroundedReviewChangesLLM()).run(request)
+
+    assert response.revisedText != request.text
+    assert response.changes
+    for change in response.changes:
+        assert change.original == "" or change.original in request.text
+        assert change.revised == "" or change.revised in response.revisedText
+
+
 async def test_strict_graph_calls_detect_rewrite_audit_review_nodes():
     calls = []
 

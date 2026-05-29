@@ -5,6 +5,7 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from humanize_core.config import Settings
+from humanize_core.diff import build_display_safe_changes
 from humanize_core.im_not_ai.audit import (
     build_audit_warnings,
     change_rate,
@@ -370,10 +371,15 @@ class RewriteGraphRunner:
             warnings.extend(review_result.warnings)
         if state.get("selected_mode") == "strict":
             llm_result, warnings = _apply_strict_terminal_safety(state, llm_result, warnings)
+        display_safe_changes = build_display_safe_changes(
+            state["request"].text,
+            llm_result.revisedText,
+            llm_result.changes,
+        )
         latency_ms = int((time.perf_counter() - state["started_at"]) * 1000)
         response = RewriteResponse(
             revisedText=llm_result.revisedText,
-            changes=llm_result.changes,
+            changes=display_safe_changes,
             summary=llm_result.summary,
             warnings=_dedupe(warnings),
             usage=Usage(
