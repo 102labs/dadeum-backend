@@ -506,7 +506,8 @@ def test_strict_detect_prompt_uses_compact_stric_rules_only_in_detect():
     assert "Operational Notes" in detect_payload["strict_rules"]
     assert "Do not flag" in detect_payload["strict_rules"]
     assert "A-2 example" in detect_payload["strict_rules"]
-    assert "Detector Contract" in detect_payload["strict_rules"]
+    assert "## Protect" in detect_payload["strict_rules"]
+    assert "## K. PE Case Crosswalk" in detect_payload["strict_rules"]
     assert "strict_rules" not in rewrite_payload
     assert "stric-rules.md" not in json.dumps(rewrite_payload, ensure_ascii=False)
     assert not hasattr(resources, "ai_tell_taxonomy")
