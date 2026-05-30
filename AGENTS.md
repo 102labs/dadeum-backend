@@ -11,7 +11,7 @@ This repository is building the backend side of a short business writing rewrite
 - Next.js SaaS app: browser-facing proxy, auth, subscription checks, usage limits, UI, and request signing.
 - Lightsail Core: internal rewrite engine, server-to-server request validation, LLM orchestration, LangGraph pipeline, semantic preservation audit, and structured rewrite response.
 
-The privacy rule is strict for plaintext bodies. Fast synchronous requests must not persist source text, rewritten text, diff body, finding body, or raw LLM request/response body. Strict asynchronous jobs may persist only encrypted source payloads and encrypted final results with a short TTL; plaintext bodies, raw LLM request/response bodies, and decrypted values must never be written to logs, analytics, or non-encrypted database columns.
+The privacy rule is strict for plaintext bodies. Fast synchronous requests must not persist source text, rewritten text, diff body, finding body, or raw LLM request/response body by default. Strict asynchronous jobs may persist only encrypted source payloads and encrypted final results with a short TTL. Plaintext bodies, raw LLM request/response bodies, and decrypted values must not be written to logs, analytics, or non-encrypted database columns unless `HUMANIZE_DEBUG_LOG_INCLUDE_PLAINTEXT=true` is explicitly enabled for a temporary debugging window; raw LLM request/response bodies and encrypted payload bytes remain excluded even then.
 
 ## Current Repository Focus
 
@@ -201,7 +201,8 @@ HUMANIZE_JOB_STORE_PATH
 HUMANIZE_JOB_ENCRYPTION_KEY
 HUMANIZE_JOB_RETENTION_SECONDS
 HUMANIZE_DEBUG_LOG_ENABLED=true
-HUMANIZE_DEBUG_LOG_DIR=~/.dadeum/humanize-core/logs
+HUMANIZE_DEBUG_LOG_DIR=/data/humanize-core/logs
+HUMANIZE_DEBUG_LOG_INCLUDE_PLAINTEXT=false
 ```
 
 Local tests may use:
@@ -218,17 +219,19 @@ response metadata.
 
 ## Debug Logging
 
-Core keeps privacy-safe step logs for rewrite debugging. The default location is:
+Core keeps step logs for rewrite debugging. The production Docker location is:
 
 ```text
-~/.dadeum/humanize-core/logs/YYYY-MM-DD.jsonl
+/data/humanize-core/logs/YYYY-MM-DD.log
 ```
 
 These logs should make asynchronous job behavior debuggable by recording request/job ids, graph step names, per-step durations, statuses, token counts, warning/change counts, retry decisions, and error codes.
 
-Never write plaintext source text, rewritten text, diff bodies, finding bodies, protected term values, user intent text, prompts, raw LLM request/response bodies, encrypted payload bytes, or decrypted job payload/result values to debug logs. Log lengths/counts/statuses instead.
+Default logging must redact plaintext source text, rewritten text, diff bodies, finding bodies, protected term values, user intent text, prompts, raw LLM request/response bodies, encrypted payload bytes, and decrypted job payload/result values. Log lengths/counts/statuses instead.
 
-When developing core features, use the local `log` skill as the workflow reminder: add privacy-safe operational logs for important pipeline stages, document where they are stored, and add tests proving sensitive text is not persisted.
+For a temporary explicit debugging window, `HUMANIZE_DEBUG_LOG_INCLUDE_PLAINTEXT=true` may be enabled to include source text, rewritten text, summaries, warnings, and change/audit details in the text log. Turn it off after debugging, and never log raw LLM request/response bodies or encrypted payload bytes.
+
+When developing core features, use the local `log` skill as the workflow reminder: add operational logs for important pipeline stages, document where they are stored, and add tests proving plaintext is redacted by default and included only when the explicit debug flag is enabled.
 
 ## Next.js SaaS Scope
 

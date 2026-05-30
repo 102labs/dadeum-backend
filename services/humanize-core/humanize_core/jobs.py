@@ -478,13 +478,6 @@ class RewriteJobManager:
         if record is None:
             self.debug_log.event("job.status.not_found", job_id=job_id, status="not_found")
             return None
-        self.debug_log.event(
-            "job.status.read",
-            request_id=record.request_id,
-            job_id=record.job_id,
-            status=record.status,
-            details=_job_debug_details(record),
-        )
         return self.store.status_response(record)
 
     def cancel(self, job_id: str) -> RewriteJobStatus | None:
@@ -548,6 +541,9 @@ class RewriteJobManager:
                     "text_length": len(request.text),
                     "protected_terms_count": len(request.protected_terms),
                     "user_intent_length": len(request.user_intent),
+                    "source_text": request.text,
+                    "user_intent": request.user_intent,
+                    "protected_terms": request.protected_terms,
                 },
             )
             response = await self.graph_runner.run(request, request_id=record.request_id, job_id=record.job_id)
@@ -569,6 +565,10 @@ class RewriteJobManager:
                     "summary_count": len(response.summary),
                     "warnings_count": len(response.warnings),
                     "revised_text_length": len(response.revisedText),
+                    "revised_text": response.revisedText,
+                    "changes": [change.model_dump(mode="json") for change in response.changes],
+                    "summary": response.summary,
+                    "warnings": response.warnings,
                 },
             )
             logger.info(

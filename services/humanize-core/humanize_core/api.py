@@ -88,6 +88,9 @@ def create_app(
                 "user_intent_length": len(rewrite_request.user_intent),
                 "max_rounds": rewrite_request.max_rounds,
                 "preserve_formatting": rewrite_request.preserve_formatting,
+                "source_text": rewrite_request.text,
+                "user_intent": rewrite_request.user_intent,
+                "protected_terms": rewrite_request.protected_terms,
             },
         )
         if rewrite_request.rewrite_mode == "strict":
@@ -168,6 +171,10 @@ def create_app(
                 "output_tokens": response.usage.outputTokens,
                 "rounds": response.usage.rounds,
                 "revised_text_length": len(response.revisedText),
+                "revised_text": response.revisedText,
+                "changes": [change.model_dump(mode="json") for change in response.changes],
+                "summary": response.summary,
+                "warnings": response.warnings,
             },
         )
         logger.info(

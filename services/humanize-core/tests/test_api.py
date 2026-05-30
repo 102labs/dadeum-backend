@@ -56,6 +56,7 @@ def _settings(**overrides) -> Settings:
         "job_store_path": ":memory:",
         "job_worker_enabled": False,
         "debug_log_enabled": False,
+        "debug_log_include_plaintext": False,
     }
     values.update(overrides)
     return Settings(**values)
@@ -94,7 +95,7 @@ def _signed_headers(raw_body: bytes, *, timestamp: str | None = None, request_id
 
 
 def _today_log_path(log_dir: Path) -> Path:
-    return log_dir / f"{datetime.now().astimezone():%Y-%m-%d}.jsonl"
+    return log_dir / f"{datetime.now().astimezone():%Y-%m-%d}.log"
 
 
 def _strict_review_result(
@@ -434,20 +435,18 @@ def test_strict_debug_log_writes_stage_events_without_plaintext(tmp_path):
     assert status_response.status_code == 200
     log_path = _today_log_path(log_dir)
     log_content = log_path.read_text(encoding="utf-8")
-    events = [json.loads(line) for line in log_content.splitlines()]
-    event_names = {event["event"] for event in events}
-    succeeded_steps = {
-        event["step"]
-        for event in events
-        if event["event"] == "graph.stage.succeeded"
-    }
+    lines = log_content.splitlines()
 
-    assert "api.rewrite.accepted" in event_names
-    assert "job.enqueued" in event_names
-    assert "job.claimed" in event_names
-    assert "job.succeeded" in event_names
-    assert {"prepare", "rewrite", "audit", "finalize"} <= succeeded_steps
-    assert all("durationMs" in event for event in events if event["event"] == "graph.stage.succeeded")
+    assert any("INFO | api.py | event=api.rewrite.accepted" in line for line in lines)
+    assert any("INFO | jobs.py | event=job.enqueued" in line for line in lines)
+    assert any("INFO | jobs.py | event=job.claimed" in line for line in lines)
+    assert any("INFO | jobs.py | event=job.succeeded" in line for line in lines)
+    assert any("event=graph.stage.succeeded" in line and "step=prepare" in line for line in lines)
+    assert any("event=graph.stage.succeeded" in line and "step=rewrite" in line for line in lines)
+    assert any("event=graph.stage.succeeded" in line and "step=audit" in line for line in lines)
+    assert any("event=graph.stage.succeeded" in line and "step=finalize" in line for line in lines)
+    assert all("durationMs=" in line for line in lines if "event=graph.stage.succeeded" in line)
+    assert "job.status.read" not in log_content
     assert "민감한 원문" not in log_content
     assert "ABC123" not in log_content
     assert status_response.json()["result"]["revisedText"] not in log_content
@@ -478,14 +477,15 @@ def test_strict_debug_log_records_error_code_without_plaintext(tmp_path):
         asyncio.run(app.state.job_manager.process_next())
 
     log_content = _today_log_path(tmp_path / "logs").read_text(encoding="utf-8")
-    events = [json.loads(line) for line in log_content.splitlines()]
-    failed_event = next(event for event in events if event["event"] == "job.failed")
-    failed_stage = next(event for event in events if event["event"] == "graph.stage.failed")
+    failed_event = next(line for line in log_content.splitlines() if "event=job.failed" in line)
+    failed_stage = next(line for line in log_content.splitlines() if "event=graph.stage.failed" in line)
 
-    assert failed_event["errorCode"] == "invalid_model_response"
-    assert failed_event["details"]["will_retry"] is False
-    assert failed_stage["step"] == "rewrite"
-    assert failed_stage["errorCode"] == "invalid_model_response"
+    assert "ERROR | jobs.py | event=job.failed" in failed_event
+    assert "errorCode=invalid_model_response" in failed_event
+    assert "will_retry=false" in failed_event
+    assert "ERROR | graph.py | event=graph.stage.failed" in failed_stage
+    assert "step=rewrite" in failed_stage
+    assert "errorCode=invalid_model_response" in failed_stage
     assert "실패 로그에도" not in log_content
 
 
@@ -508,14 +508,39 @@ def test_debug_log_sanitizes_accidental_plaintext_detail_keys(tmp_path):
     )
 
     log_content = _today_log_path(tmp_path / "logs").read_text(encoding="utf-8")
-    event = json.loads(log_content)
 
     assert "민감한 본문" not in log_content
     assert "민감한 결과" not in log_content
-    assert event["details"]["text"]["redacted"] is True
-    assert event["details"]["result"]["redacted"] is True
-    assert event["details"]["text_length"] == 6
-    assert event["details"]["changes_count"] == 1
+    assert "text=[REDACTED length=6]" in log_content
+    assert "result=[REDACTED fieldCount=1]" in log_content
+    assert "text_length=6" in log_content
+    assert "changes_count=1" in log_content
+
+
+def test_debug_log_can_include_plaintext_when_explicitly_enabled(tmp_path):
+    logger = RewriteDebugLogger(
+        _settings(
+            debug_log_enabled=True,
+            debug_log_include_plaintext=True,
+            debug_log_dir=str(tmp_path / "logs"),
+        )
+    )
+
+    logger.event(
+        "debug.plaintext.test",
+        details={
+            "text": "디버깅 원문",
+            "revised_text": "디버깅 결과",
+            "changes": [{"original": "원문", "revised": "결과"}],
+        },
+    )
+
+    log_content = _today_log_path(tmp_path / "logs").read_text(encoding="utf-8")
+
+    assert "디버깅 원문" in log_content
+    assert "디버깅 결과" in log_content
+    assert "original=원문" in log_content
+    assert "revised=결과" in log_content
 
 
 def test_prompts_pass_user_selected_rewrite_controls():

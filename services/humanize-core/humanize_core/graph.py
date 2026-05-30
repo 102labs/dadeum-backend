@@ -207,6 +207,9 @@ class RewriteGraphRunner:
                 "input_tokens": llm_result.inputTokens,
                 "output_tokens": llm_result.outputTokens,
                 "rounds": result.get("round", 1),
+                "revised_text": llm_result.revisedText,
+                "changes": [change.model_dump(mode="json") for change in llm_result.changes],
+                "summary": llm_result.summary,
             },
         )
         return result
@@ -244,6 +247,8 @@ class RewriteGraphRunner:
                 "edits_flagged_count": audit_result.editsFlagged,
                 "edits_passed_count": audit_result.editsPassed,
                 "review_required": _audit_requires_review(audit_result),
+                "warnings": audit_result.warnings,
+                "flagged_edits": [edit.model_dump(mode="json") for edit in audit_result.flaggedEdits],
             },
         )
         return result
@@ -361,6 +366,12 @@ class RewriteGraphRunner:
                 "blocking_issues_count": len(review_result.finalBlockingIssues),
                 "input_tokens": review_result.inputTokens,
                 "output_tokens": review_result.outputTokens,
+                "revised_text": review_result.revisedText,
+                "changes": [change.model_dump(mode="json") for change in review_result.changes],
+                "summary": review_result.summary,
+                "warnings": review_result.warnings,
+                "final_audit_warnings": review_result.finalAuditWarnings,
+                "final_blocking_issues": review_result.finalBlockingIssues,
             },
         )
         return result
@@ -414,6 +425,10 @@ class RewriteGraphRunner:
                 "output_tokens": response.usage.outputTokens,
                 "latency_ms": response.usage.latencyMs,
                 "rounds": response.usage.rounds,
+                "revised_text": response.revisedText,
+                "changes": [change.model_dump(mode="json") for change in response.changes],
+                "summary": response.summary,
+                "warnings": response.warnings,
             },
         )
         return result
@@ -435,6 +450,9 @@ def _request_debug_details(request: RewriteRequest) -> dict[str, object]:
         "text_length": len(request.text),
         "protected_terms_count": len(request.protected_terms),
         "user_intent_length": len(request.user_intent),
+        "source_text": request.text,
+        "user_intent": request.user_intent,
+        "protected_terms": request.protected_terms,
     }
 
 

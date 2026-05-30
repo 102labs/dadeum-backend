@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     job_max_attempts: int = Field(default=2, alias="HUMANIZE_JOB_MAX_ATTEMPTS")
     debug_log_enabled: bool = Field(default=True, alias="HUMANIZE_DEBUG_LOG_ENABLED")
     debug_log_dir: str = Field(default="~/.dadeum/humanize-core/logs", alias="HUMANIZE_DEBUG_LOG_DIR")
+    debug_log_include_plaintext: bool = Field(default=False, alias="HUMANIZE_DEBUG_LOG_INCLUDE_PLAINTEXT")
     signature_tolerance_seconds: int = 300
 
     model_config = SettingsConfigDict(
