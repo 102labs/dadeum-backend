@@ -28,18 +28,36 @@ class RewriteLLM(Protocol):
     async def rewrite(self, request: RewriteRequest) -> LLMRewriteResult:
         ...
 
+    async def rewrite_once(
+        self,
+        request: RewriteRequest,
+        context: dict[str, Any],
+    ) -> RewriteResult:
+        ...
+
 
 class StubRewriteLLM:
     """Deterministic local LLM replacement for tests and offline development."""
 
     async def rewrite(self, request: RewriteRequest) -> LLMRewriteResult:
+        rewrite_result = await self.rewrite_once(
+            request,
+            HumanizeContext().model_dump(),
+        )
+        return _rewrite_result_to_llm_result(rewrite_result)
+
+    async def rewrite_once(
+        self,
+        request: RewriteRequest,
+        context: dict[str, Any],
+    ) -> RewriteResult:
         revised = request.text.strip() if request.preserve_formatting else squeeze_spaces(request.text).strip()
         if request.tone == "formal" and revised and not revised.endswith(("습니다.", "합니다.", ".", "!", "?")):
             revised = f"{revised}."
         if request.tone == "friendly":
             revised = _soften_stub_tone(revised)
 
-        return LLMRewriteResult(
+        return RewriteResult(
             revisedText=revised,
             changes=build_fallback_changes(request.text, revised),
             summary=[_stub_summary(request)],
@@ -56,13 +74,24 @@ class OpenAIRewriteLLM:
         self.model_name = model_name
 
     async def rewrite(self, request: RewriteRequest) -> LLMRewriteResult:
+        rewrite_result = await self.rewrite_once(
+            request,
+            HumanizeContext().model_dump(),
+        )
+        return _rewrite_result_to_llm_result(rewrite_result)
+
+    async def rewrite_once(
+        self,
+        request: RewriteRequest,
+        context: dict[str, Any],
+    ) -> RewriteResult:
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=self.api_key)
         response = await client.responses.create(
             model=self.model_name,
             instructions=prompts.rewrite_system_prompt(),
-            input=prompts.rewrite_user_prompt(request, HumanizeContext().model_dump()),
+            input=prompts.rewrite_user_prompt(request, context),
             max_output_tokens=MAX_OUTPUT_TOKENS,
             text={"format": _openai_rewrite_text_format()},
         )
@@ -72,7 +101,7 @@ class OpenAIRewriteLLM:
         if usage:
             result.inputTokens = getattr(usage, "input_tokens", 0) or 0
             result.outputTokens = getattr(usage, "output_tokens", 0) or 0
-        return result
+        return _llm_result_to_rewrite_result(result)
 
 
 class AnthropicRewriteLLM:
@@ -83,6 +112,17 @@ class AnthropicRewriteLLM:
         self.model_name = model_name
 
     async def rewrite(self, request: RewriteRequest) -> LLMRewriteResult:
+        rewrite_result = await self.rewrite_once(
+            request,
+            HumanizeContext().model_dump(),
+        )
+        return _rewrite_result_to_llm_result(rewrite_result)
+
+    async def rewrite_once(
+        self,
+        request: RewriteRequest,
+        context: dict[str, Any],
+    ) -> RewriteResult:
         from anthropic import AsyncAnthropic
 
         client = AsyncAnthropic(api_key=self.api_key)
@@ -91,7 +131,7 @@ class AnthropicRewriteLLM:
             max_tokens=MAX_OUTPUT_TOKENS,
             temperature=0.2,
             system=prompts.rewrite_system_prompt(),
-            messages=[{"role": "user", "content": prompts.rewrite_user_prompt(request, HumanizeContext().model_dump())}],
+            messages=[{"role": "user", "content": prompts.rewrite_user_prompt(request, context)}],
         )
         content = "".join(
             block.text for block in response.content if getattr(block, "type", "") == "text"
@@ -99,7 +139,7 @@ class AnthropicRewriteLLM:
         result = _parse_llm_json(content, request.text)
         result.inputTokens = response.usage.input_tokens
         result.outputTokens = response.usage.output_tokens
-        return result
+        return _llm_result_to_rewrite_result(result)
 
 
 TStructuredResult = TypeVar(
@@ -140,13 +180,7 @@ class OpenRouterRewriteLLM:
             request,
             HumanizeContext().model_dump(),
         )
-        return LLMRewriteResult(
-            revisedText=rewrite_result.revisedText,
-            changes=rewrite_result.changes,
-            summary=rewrite_result.summary,
-            inputTokens=rewrite_result.inputTokens,
-            outputTokens=rewrite_result.outputTokens,
-        )
+        return _rewrite_result_to_llm_result(rewrite_result)
 
     async def rewrite_once(
         self,
@@ -279,6 +313,26 @@ def create_llm(
             strict_review_model_name=strict_review_model_name,
         )
     raise LLMConfigurationError(f"Unsupported HUMANIZE_MODEL_PROVIDER: {provider}")
+
+
+def _rewrite_result_to_llm_result(result: RewriteResult) -> LLMRewriteResult:
+    return LLMRewriteResult(
+        revisedText=result.revisedText,
+        changes=result.changes,
+        summary=result.summary,
+        inputTokens=result.inputTokens,
+        outputTokens=result.outputTokens,
+    )
+
+
+def _llm_result_to_rewrite_result(result: LLMRewriteResult) -> RewriteResult:
+    return RewriteResult(
+        revisedText=result.revisedText,
+        changes=result.changes,
+        summary=result.summary,
+        inputTokens=result.inputTokens,
+        outputTokens=result.outputTokens,
+    )
 
 
 def _dedupe_models(models: list[str]) -> list[str]:

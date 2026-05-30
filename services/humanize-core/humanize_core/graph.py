@@ -9,7 +9,7 @@ from humanize_core.config import Settings
 from humanize_core.debug_log import RewriteDebugLogger
 from humanize_core.diff import build_display_safe_changes
 from humanize_core.im_not_ai.audit import (
-    change_rate,
+    local_detect,
     mark_high_risk_if_needed,
     split_sentences,
 )
@@ -19,9 +19,11 @@ from humanize_core.im_not_ai.preservation import (
 )
 from humanize_core.im_not_ai.schemas import (
     AuditResult,
+    Finding,
     FlaggedEdit,
     RewriteResult,
     HumanizeContext,
+    RulebookHint,
     StrictReviewResult,
 )
 from humanize_core.llm import LLMConfigurationError, LLMResponseError, RewriteLLM
@@ -152,7 +154,14 @@ class RewriteGraphRunner:
 
             warnings: list[str] = []
 
-            context = HumanizeContext().model_dump()
+            detection = local_detect(request.text, protected_terms=request.protected_terms)
+            context_model = HumanizeContext(
+                detectedCount=detection.detectedCount,
+                severityWeightedScore=detection.severityWeightedScore,
+                categorySummary=detection.categorySummary,
+                rulebookHints=_compact_rulebook_hints(detection.findings),
+            )
+            context = context_model.model_dump()
 
             result: RewriteState = {
                 "humanize_context": context,
@@ -170,6 +179,10 @@ class RewriteGraphRunner:
             details={
                 **_request_debug_details(request),
                 "context_field_count": len(context),
+                "rulebook_hint_count": len(context_model.rulebookHints),
+                "rulebook_category_summary": context_model.categorySummary,
+                "rulebook_detected_count": context_model.detectedCount,
+                "rulebook_severity_score": context_model.severityWeightedScore,
                 "warnings_count": len(warnings),
             },
         )
@@ -481,9 +494,7 @@ def _rewrite_result_state(
     rewrite_result: RewriteResult,
     warnings: list[str],
 ) -> RewriteState:
-    rate = rewrite_result.changeRate or change_rate(request.text, rewrite_result.revisedText)
     summary = list(rewrite_result.summary)
-    summary.append(f"Rewrite 단일 초안 메타: 변경률 {rate:.2f}%.")
     llm_result = LLMRewriteResult(
         revisedText=rewrite_result.revisedText,
         changes=rewrite_result.changes,
@@ -497,6 +508,54 @@ def _rewrite_result_state(
         "warnings": _dedupe([*warnings, *rewrite_result.warnings]),
         "round": 1,
     }
+
+
+def _compact_rulebook_hints(findings: list[Finding]) -> list[RulebookHint]:
+    severity_order = {"S1": 0, "S2": 1, "S3": 2}
+    scope_order = {"span": 0, "document": 1}
+    sorted_findings = sorted(
+        findings,
+        key=lambda finding: (
+            severity_order.get(finding.severity, 9),
+            scope_order.get(finding.scope, 9),
+            finding.category,
+            finding.id,
+        ),
+    )
+    hints: list[RulebookHint] = []
+    seen_categories: set[str] = set()
+    for finding in sorted_findings:
+        if finding.severity not in {"S1", "S2"}:
+            continue
+        # Keep the prompt compact and avoid raw source spans. Prefer category
+        # diversity first, then fill any remaining slots below.
+        if finding.category in seen_categories:
+            continue
+        hints.append(_rulebook_hint_from_finding(finding))
+        seen_categories.add(finding.category)
+        if len(hints) >= 8:
+            return hints
+
+    for finding in sorted_findings:
+        if len(hints) >= 8:
+            break
+        if finding.severity not in {"S1", "S2"}:
+            continue
+        if any(hint.id == finding.id for hint in hints):
+            continue
+        hints.append(_rulebook_hint_from_finding(finding))
+    return hints
+
+
+def _rulebook_hint_from_finding(finding: Finding) -> RulebookHint:
+    return RulebookHint(
+        id=finding.id,
+        category=finding.category,
+        categoryLabel=finding.categoryLabel,
+        severity=finding.severity,
+        scope=finding.scope,
+        suggestedFix=finding.suggestedFix,
+    )
 
 
 def _audit_status(local_warnings: list[str], model_status: str, flagged_edits: list[FlaggedEdit]) -> str:

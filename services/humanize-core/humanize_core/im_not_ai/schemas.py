@@ -117,5 +117,21 @@ class StrictReviewResult(BaseModel):
     outputTokens: int = 0
 
 
+class RulebookHint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    category: str
+    categoryLabel: str
+    severity: Severity
+    scope: FindingScope
+    suggestedFix: str
+
+
 class HumanizeContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    detectedCount: int = 0
+    severityWeightedScore: float = 0.0
+    categorySummary: dict[str, int] = Field(default_factory=dict)
+    rulebookHints: list[RulebookHint] = Field(default_factory=list)

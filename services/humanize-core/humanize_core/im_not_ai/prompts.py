@@ -22,7 +22,8 @@ def rewrite_system_prompt() -> str:
         "Perform an active rewrite pass: improve the whole Korean business passage in one call. "
         "Your job is rewriting, not auditing; a later audit will check preservation problems. "
         "Apply the rulebook assertively: remove translationese, reduce repetition, improve word order, rhythm, transitions, and business clarity across the passage. "
-        "Keep facts, numbers, dates, names, quotations, URLs, code, and register intact, but never use preservation as a reason to copy safe surrounding prose unchanged. "
+        "Keep facts, numbers, dates, names, quotations, URLs, and code intact while applying the requested tone inside the same business context. "
+        "Never use preservation as a reason to copy safe surrounding prose unchanged. "
         "revisedText must differ from the original with concrete wording edits whenever any safe expression can be improved. "
         "Use user_intent, tone, and preserve_formatting to choose tone and formatting. "
         "Do not add new claims, examples, metaphors, facts, or citations. "
@@ -47,7 +48,7 @@ def rewrite_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str
             "changes가 비어 있거나 revisedText가 원문과 같으면 실패 출력으로 간주한다.",
         ],
         "edit_intensity": {
-            "target": "보존이 안전한 일반 문장은 20~40% 수준의 체감 변화가 나도록 적극 다듬는다.",
+            "target": "변경률 숫자가 아니라 룰북 신호 해결과 문체 체감성을 목표로 삼는다.",
             "minimum": "S1/S2 신호, 반복 표현, 장황한 설명, 어색한 연결, 번역투가 하나라도 있으면 해당 구간에 실질 수정이 있어야 한다.",
             "avoid": "새 정보 추가, 과한 마케팅 톤, 원문 구조 파괴, 인용·수치·날짜 변경",
         },
@@ -61,20 +62,22 @@ def rewrite_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str
         "self_check_required": [
             "원문의 모든 문장·문단이 결과에 반영됐는지 확인한다.",
             "고유명사·수치·날짜·인용 100% 보존",
-            "register 보존",
+            "선택된 tone을 반영하되 업무 문맥과 격식 범위 보존",
             "잔존 S1 패턴 0건",
             "원문에 없는 사실·예시·비유·근거·과한 마케팅 문구 추가 없음",
             "user_intent, tone, preserve_formatting 반영",
         ],
         "must_report": [
             "qualityLevel: A/B/C/D",
-            "changeRate: 원문 대비 문자 변경률",
             "rollbackRequired: 진단 신호일 뿐 rewrite 단계에서 원문으로 되돌리지 않는다. 의미 보존 실패, 누락, 출력 잘림, 보존 대상 변경이 의심될 때만 true",
             "settingsApplied: user_intent, tone, preserve_formatting 반영 여부",
         ],
         "completion_contract": _completion_contract(request),
         "text": request.text,
     }
+    rewrite_priorities = _rewrite_priorities(context)
+    if rewrite_priorities:
+        payload["rewrite_priorities"] = rewrite_priorities
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -228,10 +231,20 @@ def _single_mode_guidance() -> str:
 
 def _tone_guidance(tone: str) -> str:
     if tone == "formal":
-        return "격식 있는 비즈니스 문체로 조절한다. 예의 있고 단정한 종결, 과장 없는 전문적 표현을 사용한다."
+        return (
+            "격식 있는 비즈니스 문체로 조절한다. 단정한 서술형·하십시오/합니다 계열 종결을 우선하고, "
+            "구어적 축약과 느슨한 표현을 줄이며, 전문적이되 과장 없는 어휘를 사용한다. "
+            "새 정보나 과한 권위 표현은 추가하지 않는다."
+        )
     if tone == "friendly":
-        return "친근하지만 업무 맥락을 해치지 않는 문체로 조절한다. 지나친 구어체, 감탄, 과장 표현은 피한다."
-    return "기존 톤과 격식을 유지한다. 새 톤을 만들지 않되 어색한 표현, 반복, 장황한 연결은 적극적으로 정리한다."
+        return (
+            "자연스럽고 부드러운 업무 문체로 조절한다. 딱딱한 명사화와 직역 표현을 풀고, 연결과 종결을 편하게 다듬되 "
+            "업무상 예의와 신뢰감은 유지한다. 지나친 구어체, 감탄, 농담, 과장 표현은 피한다."
+        )
+    return (
+        "기존 톤과 격식을 유지한다. 새 톤을 만들지 않되 어색한 표현, 반복, 장황한 연결, 번역투는 적극적으로 정리한다. "
+        "원문의 거리감과 말투를 보존하면서 문장 품질만 높인다."
+    )
 
 
 def _formatting_guidance(preserve_formatting: bool) -> str:
@@ -269,3 +282,33 @@ def _prompt_sentences(text: str) -> list[str]:
         for match in re.finditer(r"[^.!?。！？\n]+[.!?。！？]?", text)
         if match.group(0).strip()
     ]
+
+
+def _rewrite_priorities(context: dict[str, Any]) -> dict[str, Any]:
+    raw_hints = context.get("rulebookHints") or []
+    hints: list[dict[str, str]] = []
+    for item in raw_hints[:8]:
+        if not isinstance(item, dict):
+            continue
+        hints.append(
+            {
+                "id": str(item.get("id", "")),
+                "category": str(item.get("category", "")),
+                "categoryLabel": str(item.get("categoryLabel", "")),
+                "severity": str(item.get("severity", "")),
+                "scope": str(item.get("scope", "")),
+                "suggestedFix": str(item.get("suggestedFix", "")),
+            }
+        )
+    if not hints:
+        return {}
+    return {
+        "purpose": "원문에서 감지된 safe-edit 후보다. 의미·수치·고유명사·인용·protected_terms 보존을 우선하면서 가능한 후보를 rewrite 단계에서 해결한다.",
+        "rulebook_hints": hints,
+        "priority_policy": [
+            "S1/S2 후보를 우선 처리한다.",
+            "후보는 감사 결과가 아니라 rewrite 우선순위다.",
+            "후보 처리가 의미 보존과 충돌하면 보존을 우선한다.",
+            "원문 위치 정보와 protected term 값은 포함하지 않는다.",
+        ],
+    }

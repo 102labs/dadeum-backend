@@ -34,6 +34,7 @@ from humanize_core.im_not_ai.schemas import (
     StrictReviewResult,
 )
 from humanize_core.llm import (
+    AnthropicRewriteLLM,
     MAX_OUTPUT_TOKENS,
     LLMResponseError,
     OpenAIRewriteLLM,
@@ -74,6 +75,32 @@ def _payload(**overrides):
     }
     body.update(overrides)
     return body
+
+
+def _rulebook_context() -> dict[str, object]:
+    return {
+        "detectedCount": 2,
+        "severityWeightedScore": 8.0,
+        "categorySummary": {"A-2": 1, "A-7": 1},
+        "rulebookHints": [
+            {
+                "id": "local-A-2-1",
+                "category": "A-2",
+                "categoryLabel": "번역투: ~를 통해",
+                "severity": "S1",
+                "scope": "span",
+                "suggestedFix": "~로, ~해서, ~함으로써 등으로 분산합니다.",
+            },
+            {
+                "id": "local-A-7-1",
+                "category": "A-7",
+                "categoryLabel": "직역: 가지고 있다",
+                "severity": "S1",
+                "scope": "span",
+                "suggestedFix": "동사나 형용사로 환원합니다.",
+            },
+        ],
+    }
 
 
 def _signed_headers(raw_body: bytes, *, timestamp: str | None = None, request_id: str = "req_test"):
@@ -568,7 +595,8 @@ def test_prompts_pass_user_selected_rewrite_controls():
         "preserve_formatting": True,
     }
     assert "우선 반영" in payload["rewrite_guidance"]["user_intent"]
-    assert "친근" in payload["rewrite_guidance"]["tone"]
+    assert "자연스럽고 부드러운 업무 문체" in payload["rewrite_guidance"]["tone"]
+    assert "지나친 구어체" in payload["rewrite_guidance"]["tone"]
     assert "protected_terms" not in payload["rewrite_guidance"]
     assert "max_rounds" not in payload["rewrite_guidance"]
     assert "rewrite_mode" not in payload["rewrite_guidance"]
@@ -618,6 +646,8 @@ def test_rewrite_prompt_runs_active_rulebook_single_pass():
     assert "명확성" in rendered_payload
     assert "룰북을 적극 적용" in payload["rewrite_guidance"]["rewrite_policy"]
     assert "fast mode" not in rendered_payload
+    assert "20~40%" not in rendered_payload
+    assert all("changeRate" not in item for item in payload["must_report"])
 
 
 def test_review_prompt_applies_audit_corrections_and_reaudits():
@@ -646,7 +676,7 @@ def test_review_prompt_applies_audit_corrections_and_reaudits():
     payload = json.loads(
         prompts.review_user_prompt(
             request,
-            {},
+            _rulebook_context(),
             "이 기능은 데이터를 통해 성장을 지원합니다.",
             audit_result,
         )
@@ -658,6 +688,8 @@ def test_review_prompt_applies_audit_corrections_and_reaudits():
     assert "fixed_review_routine" in payload
     assert "original_detection" not in payload
     assert "residual_detection" not in payload
+    assert "rewrite_priorities" not in payload
+    assert "rulebook_hints" not in rendered
     assert "새로 고치지 않는다" in rendered
     assert "finalAuditStatus" in rendered
 
@@ -686,6 +718,53 @@ def test_rewrite_prompt_embeds_active_rules_without_detect_stage():
     assert hasattr(resources, "strict_rules")
 
 
+def test_rewrite_prompt_includes_compact_rulebook_priorities_only_in_rewrite():
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            text="결과를 통해 성과를 만들고 목적을 가지고 있습니다.",
+            rewrite_mode="strict",
+        )
+    )
+    context = _rulebook_context()
+
+    rewrite_payload = json.loads(prompts.rewrite_user_prompt(request, context))
+    audit_payload = json.loads(prompts.audit_user_prompt(request, context, request.text, []))
+    review_payload = json.loads(
+        prompts.review_user_prompt(
+            request,
+            context,
+            request.text,
+            AuditResult(status="full_pass", reason="통과"),
+        )
+    )
+
+    assert "rewrite_priorities" in rewrite_payload
+    priority_payload = json.dumps(rewrite_payload["rewrite_priorities"], ensure_ascii=False)
+    assert "rulebook_hints" in rewrite_payload["rewrite_priorities"]
+    assert rewrite_payload["rewrite_priorities"]["rulebook_hints"][0]["category"] == "A-2"
+    assert "번역투: ~를 통해" in priority_payload
+
+    for forbidden in (
+        "findings",
+        "style_rules",
+        "original_detection",
+        "residual_detection",
+        "textSpan",
+        "start",
+        "end",
+        "결과를 통해",
+        "목적을 가지고",
+    ):
+        assert forbidden not in priority_payload
+
+    rendered_audit = json.dumps(audit_payload, ensure_ascii=False)
+    rendered_review = json.dumps(review_payload, ensure_ascii=False)
+    assert "rewrite_priorities" not in rendered_audit
+    assert "rulebook_hints" not in rendered_audit
+    assert "rewrite_priorities" not in rendered_review
+    assert "rulebook_hints" not in rendered_review
+
+
 def test_rewrite_audit_review_prompts_follow_single_routine():
     request = RewriteRequestForTest.model_validate(
         _payload(
@@ -698,16 +777,21 @@ def test_rewrite_audit_review_prompts_follow_single_routine():
             max_rounds=2,
         )
     )
-    context = {}
+    context = _rulebook_context()
 
     rewrite_prompt = prompts.rewrite_user_prompt(request, context)
+    audit_prompt = prompts.audit_user_prompt(request, context, request.text, [])
     audit_result = AuditResult(status="full_pass", reason="통과")
     review_prompt = prompts.review_user_prompt(request, context, request.text, audit_result)
 
     assert "im_not_ai_quick_rules" in json.loads(rewrite_prompt)
+    assert "rewrite_priorities" in json.loads(rewrite_prompt)
     assert "preservation_audit" in json.loads(review_prompt)
     assert "exact_preserve_targets" not in json.loads(rewrite_prompt)
+    assert "exact_preserve_targets" in json.loads(audit_prompt)
     assert "exact_preserve_targets" in json.loads(review_prompt)
+    assert "rewrite_priorities" not in audit_prompt
+    assert "rewrite_priorities" not in review_prompt
     assert len(review_prompt) < len(rewrite_prompt)
 
 
@@ -729,6 +813,42 @@ def test_strict_audit_prompt_does_not_embed_scholarship_reference():
     assert "번역학계" not in rendered_payload
     assert "checklist_13" in payload
     assert "exact_preserve_targets" in payload
+
+
+def test_tone_guidance_is_stronger_and_distinct_for_requested_tones():
+    formal = RewriteRequestForTest.model_validate(_payload(tone="formal"))
+    friendly = RewriteRequestForTest.model_validate(_payload(tone="friendly"))
+    keep = RewriteRequestForTest.model_validate(_payload(tone="keep"))
+
+    formal_tone = prompts.rewrite_guidance(formal)["tone"]
+    friendly_tone = prompts.rewrite_guidance(friendly)["tone"]
+    keep_tone = prompts.rewrite_guidance(keep)["tone"]
+
+    assert formal_tone != friendly_tone
+    assert formal_tone != keep_tone
+    assert friendly_tone != keep_tone
+    assert "격식 있는 비즈니스 문체" in formal_tone
+    assert "하십시오/합니다" in formal_tone
+    assert "구어적 축약" in formal_tone
+    assert "자연스럽고 부드러운 업무 문체" in friendly_tone
+    assert "직역 표현" in friendly_tone
+    assert "지나친 구어체" in friendly_tone
+    assert "기존 톤과 격식" in keep_tone
+
+
+def test_rulebook_and_rewrite_prompt_do_not_target_fixed_change_rate():
+    request = RewriteRequestForTest.model_validate(
+        _payload(text="결론적으로 성과를 통해 결과를 냈습니다.", rewrite_mode="strict")
+    )
+
+    rendered_prompt = prompts.rewrite_user_prompt(request, _rulebook_context())
+    strict_rules_text = resources.strict_rules()
+
+    assert "20~40%" not in rendered_prompt
+    assert "20~40%" not in strict_rules_text
+    assert "changeRate" not in rendered_prompt
+    assert "변경률은 품질 목표가 아니라 보존 위험 신호" in rendered_prompt
+    assert "tone 설정 체감 가능" in strict_rules_text
 
 
 def test_removed_reference_resources_have_no_runtime_loaders():
@@ -785,7 +905,7 @@ async def test_protected_terms_are_restored_by_audit_safety():
     assert all(change.revised in response.revisedText for change in response.changes)
 
 
-async def test_prepare_context_is_empty():
+async def test_prepare_context_contains_compact_rulebook_hints():
     captured = {}
 
     class CapturingLLM:
@@ -801,12 +921,100 @@ async def test_prepare_context_is_empty():
             )
 
     request = RewriteRequestForTest.model_validate(
-        _payload(text="분기별 보고 결과와 분석 내용입니다.")
+        _payload(text="성과를 통해 결과를 냈고 목적을 가지고 있습니다.")
     )
 
     await RewriteGraphRunner(_settings(), CapturingLLM()).run(request)
 
-    assert captured["context"] == {}
+    context = captured["context"]
+    assert context["detectedCount"] >= 2
+    assert context["severityWeightedScore"] > 0
+    assert context["categorySummary"]["A"] >= 2
+    assert len(context["rulebookHints"]) <= 8
+    assert {hint["category"] for hint in context["rulebookHints"]} >= {"A-2", "A-7"}
+    for hint in context["rulebookHints"]:
+        assert set(hint) == {"id", "category", "categoryLabel", "severity", "scope", "suggestedFix"}
+        assert "textSpan" not in hint
+        assert "start" not in hint
+        assert "end" not in hint
+
+
+async def test_prepare_context_does_not_leak_protected_term_spans():
+    captured = {}
+    protected = "API v1을 통해"
+
+    class CapturingLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            captured["context"] = context
+            return RewriteResult(
+                revisedText=request.text,
+                changes=[Change(original="", revised="", reason="유지했습니다.", type="clarity", riskLevel="low")],
+                summary=["유지했습니다."],
+            )
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(text=f"{protected} 결과를 확인했습니다.", protected_terms=[protected])
+    )
+
+    await RewriteGraphRunner(_settings(), CapturingLLM()).run(request)
+
+    rendered_context = json.dumps(captured["context"], ensure_ascii=False)
+    assert protected not in rendered_context
+    assert "API v1" not in rendered_context
+    assert "textSpan" not in rendered_context
+    assert "start" not in rendered_context
+    assert "end" not in rendered_context
+
+
+async def test_prepare_rulebook_hints_do_not_add_extra_llm_calls():
+    calls = []
+
+    class CountingLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            calls.append("rewrite")
+            assert context["rulebookHints"]
+            return RewriteResult(
+                revisedText="성과로 결과를 냈고 목적이 있습니다.",
+                changes=[
+                    Change(
+                        original="성과를 통해",
+                        revised="성과로",
+                        reason="번역투를 줄였습니다.",
+                        type="clarity",
+                        riskLevel="low",
+                    )
+                ],
+                summary=["번역투를 줄였습니다."],
+            )
+
+        async def audit(self, request, context, revised_text, changes):
+            calls.append("audit")
+            return AuditResult(status="full_pass", reason="통과")
+
+        async def review(self, request, context, revised_text, audit_result):
+            calls.append("review")
+            return StrictReviewResult(
+                revisedText=revised_text,
+                changes=[],
+                summary=[],
+                auditCorrectionsApplied=[],
+                finalAuditStatus="full_pass",
+                finalBlockingIssues=[],
+            )
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(text="성과를 통해 결과를 냈고 목적을 가지고 있습니다.")
+    )
+
+    await RewriteGraphRunner(_settings(), CountingLLM()).run(request)
+
+    assert calls == ["rewrite", "audit"]
 
 
 def test_local_style_rules_cover_legacy_source_rule_ids():
@@ -1666,8 +1874,9 @@ async def test_openai_rewrite_uses_responses_structured_output(monkeypatch):
     )
 
     llm = OpenAIRewriteLLM(api_key="test-key", model_name="gpt-5-mini")
-    result = await llm.rewrite(
+    result = await llm.rewrite_once(
         RewriteRequestForTest.model_validate(_payload()),
+        _rulebook_context(),
     )
 
     assert result.revisedText == "개선된 문장입니다."
@@ -1678,6 +1887,68 @@ async def test_openai_rewrite_uses_responses_structured_output(monkeypatch):
     assert calls[0]["text"]["format"]["type"] == "json_schema"
     assert calls[0]["text"]["format"]["strict"] is True
     assert "response_format" not in calls[0]
+    user_payload = json.loads(calls[0]["input"])
+    assert "rewrite_priorities" in user_payload
+    assert user_payload["rewrite_priorities"]["rulebook_hints"][0]["category"] == "A-2"
+
+
+async def test_anthropic_rewrite_once_uses_prepared_context(monkeypatch):
+    calls = []
+
+    class FakeMessages:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "revisedText": "개선된 문장입니다.",
+                                "changes": [
+                                    {
+                                        "original": "원문",
+                                        "revised": "개선된 문장",
+                                        "reason": "명확성을 높였습니다.",
+                                        "type": "clarity",
+                                        "riskLevel": "low",
+                                    }
+                                ],
+                                "summary": ["표현을 정리했습니다."],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ],
+                usage=SimpleNamespace(input_tokens=17, output_tokens=9),
+            )
+
+    class FakeAsyncAnthropic:
+        def __init__(self, api_key):
+            self.api_key = api_key
+            self.messages = FakeMessages()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "anthropic",
+        SimpleNamespace(AsyncAnthropic=FakeAsyncAnthropic),
+    )
+
+    llm = AnthropicRewriteLLM(api_key="anthropic-key", model_name="claude-test")
+    result = await llm.rewrite_once(
+        RewriteRequestForTest.model_validate(_payload()),
+        _rulebook_context(),
+    )
+
+    assert result.revisedText == "개선된 문장입니다."
+    assert result.inputTokens == 17
+    assert result.outputTokens == 9
+    assert calls[0]["model"] == "claude-test"
+    assert calls[0]["max_tokens"] == MAX_OUTPUT_TOKENS
+    assert calls[0]["temperature"] == 0.2
+    user_payload = json.loads(calls[0]["messages"][0]["content"])
+    assert "rewrite_priorities" in user_payload
+    assert user_payload["rewrite_priorities"]["rulebook_hints"][0]["category"] == "A-2"
 
 
 async def test_openrouter_rewrite_once_uses_json_schema_and_usage(monkeypatch):
@@ -1745,7 +2016,7 @@ async def test_openrouter_rewrite_once_uses_json_schema_and_usage(monkeypatch):
 
     result = await llm.rewrite_once(
         RewriteRequestForTest.model_validate(_payload()),
-        context={},
+        context=_rulebook_context(),
     )
 
     assert result.revisedText == "개선된 문장입니다."
@@ -1759,6 +2030,9 @@ async def test_openrouter_rewrite_once_uses_json_schema_and_usage(monkeypatch):
     assert calls[0]["response_format"]["json_schema"]["strict"] is True
     assert calls[0]["extra_body"]["provider"]["require_parameters"] is True
     assert "temperature" not in calls[0]
+    user_payload = json.loads(calls[0]["messages"][1]["content"])
+    assert "rewrite_priorities" in user_payload
+    assert user_payload["rewrite_priorities"]["rulebook_hints"][0]["category"] == "A-2"
 
 
 async def test_openrouter_rewrite_once_omits_temperature_for_parameter_routing(monkeypatch):
