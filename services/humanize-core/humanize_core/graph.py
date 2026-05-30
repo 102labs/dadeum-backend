@@ -6,6 +6,7 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from humanize_core.config import Settings
+from humanize_core.debug_log import RewriteDebugLogger
 from humanize_core.diff import build_display_safe_changes
 from humanize_core.im_not_ai.audit import (
     change_rate,
@@ -23,7 +24,7 @@ from humanize_core.im_not_ai.schemas import (
     HumanizeContext,
     StrictReviewResult,
 )
-from humanize_core.llm import RewriteLLM
+from humanize_core.llm import LLMConfigurationError, LLMResponseError, RewriteLLM
 from humanize_core.schemas import Change, LLMRewriteResult, RewriteRequest, RewriteResponse, Usage
 
 
@@ -40,6 +41,8 @@ _INCOMPLETE_WARNING_RE = re.compile(
 
 class RewriteState(TypedDict, total=False):
     request: RewriteRequest
+    request_id: str
+    job_id: str
     humanize_context: dict
     warnings: list[str]
     audit_result: AuditResult
@@ -52,13 +55,30 @@ class RewriteState(TypedDict, total=False):
 
 
 class RewriteGraphRunner:
-    def __init__(self, settings: Settings, llm: RewriteLLM) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        llm: RewriteLLM,
+        debug_logger: RewriteDebugLogger | None = None,
+    ) -> None:
         self.settings = settings
         self.llm = llm
+        self.debug_log = debug_logger or RewriteDebugLogger(settings)
         self.graph = self._build_graph()
 
-    async def run(self, request: RewriteRequest) -> RewriteResponse:
-        state = await self.graph.ainvoke({"request": request, "started_at": time.perf_counter()})
+    async def run(
+        self,
+        request: RewriteRequest,
+        *,
+        request_id: str | None = None,
+        job_id: str | None = None,
+    ) -> RewriteResponse:
+        initial_state: RewriteState = {"request": request, "started_at": time.perf_counter()}
+        if request_id:
+            initial_state["request_id"] = request_id
+        if job_id:
+            initial_state["job_id"] = job_id
+        state = await self.graph.ainvoke(initial_state)
         return state["response"]
 
     def _build_graph(self):
@@ -80,48 +100,153 @@ class RewriteGraphRunner:
         builder.add_edge("finalize", END)
         return builder.compile()
 
+    def _stage_started(self, state: RewriteState, step: str) -> float:
+        started_at = time.perf_counter()
+        self.debug_log.event(
+            "graph.stage.started",
+            request_id=state.get("request_id"),
+            job_id=state.get("job_id"),
+            step=step,
+            status="running",
+            details=_request_debug_details(state["request"]),
+        )
+        return started_at
+
+    def _stage_succeeded(
+        self,
+        state: RewriteState,
+        step: str,
+        started_at: float,
+        *,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        self.debug_log.event(
+            "graph.stage.succeeded",
+            request_id=state.get("request_id"),
+            job_id=state.get("job_id"),
+            step=step,
+            status="succeeded",
+            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            details=details,
+        )
+
+    def _stage_failed(self, state: RewriteState, step: str, started_at: float, exc: Exception) -> None:
+        self.debug_log.event(
+            "graph.stage.failed",
+            request_id=state.get("request_id"),
+            job_id=state.get("job_id"),
+            step=step,
+            status="failed",
+            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            error_code=_error_code_from_exception(exc),
+            details={"error_type": type(exc).__name__},
+        )
+
     async def _prepare(self, state: RewriteState) -> RewriteState:
-        request = state["request"]
-        text_length = len(request.text)
-        if text_length > self.settings.max_chars:
-            raise InputLimitError(f"text length exceeds HUMANIZE_MAX_CHARS ({self.settings.max_chars})")
+        stage_started_at = self._stage_started(state, "prepare")
+        try:
+            request = state["request"]
+            text_length = len(request.text)
+            if text_length > self.settings.max_chars:
+                raise InputLimitError(f"text length exceeds HUMANIZE_MAX_CHARS ({self.settings.max_chars})")
 
-        warnings: list[str] = []
+            warnings: list[str] = []
 
-        context = HumanizeContext().model_dump()
+            context = HumanizeContext().model_dump()
 
-        return {
-            "humanize_context": context,
-            "warnings": warnings,
-            "round": 0,
-        }
+            result: RewriteState = {
+                "humanize_context": context,
+                "warnings": warnings,
+                "round": 0,
+            }
+        except Exception as exc:
+            self._stage_failed(state, "prepare", stage_started_at, exc)
+            raise
+
+        self._stage_succeeded(
+            state,
+            "prepare",
+            stage_started_at,
+            details={
+                **_request_debug_details(request),
+                "context_field_count": len(context),
+                "warnings_count": len(warnings),
+            },
+        )
+        return result
 
     async def _rewrite(self, state: RewriteState) -> RewriteState:
-        request = state["request"]
-        if hasattr(self.llm, "rewrite_once"):
-            rewrite_result: RewriteResult = await self.llm.rewrite_once(  # type: ignore[attr-defined]
-                request,
-                state["humanize_context"],
-            )
-            return _rewrite_result_state(request, rewrite_result, state.get("warnings", []))
+        stage_started_at = self._stage_started(state, "rewrite")
+        try:
+            request = state["request"]
+            if hasattr(self.llm, "rewrite_once"):
+                rewrite_result: RewriteResult = await self.llm.rewrite_once(  # type: ignore[attr-defined]
+                    request,
+                    state["humanize_context"],
+                )
+                result = _rewrite_result_state(request, rewrite_result, state.get("warnings", []))
+                llm_result = result["llm_result"]
+                implementation = "rewrite_once"
+            else:
+                llm_result = await self.llm.rewrite(request)
+                result = {"llm_result": llm_result, "rewrite_result": llm_result, "round": 1}
+                implementation = "rewrite"
+        except Exception as exc:
+            self._stage_failed(state, "rewrite", stage_started_at, exc)
+            raise
 
-        llm_result = await self.llm.rewrite(request)
-        return {"llm_result": llm_result, "rewrite_result": llm_result, "round": 1}
+        self._stage_succeeded(
+            state,
+            "rewrite",
+            stage_started_at,
+            details={
+                "implementation": implementation,
+                "revised_text_length": len(llm_result.revisedText),
+                "changes_count": len(llm_result.changes),
+                "summary_count": len(llm_result.summary),
+                "input_tokens": llm_result.inputTokens,
+                "output_tokens": llm_result.outputTokens,
+                "rounds": result.get("round", 1),
+            },
+        )
+        return result
 
     async def _audit(self, state: RewriteState) -> RewriteState:
-        request = state["request"]
-        llm_result = state["llm_result"]
-        audit_result = await self._audit_candidate(
-            request,
-            state["humanize_context"],
-            llm_result.revisedText,
-            llm_result.changes,
+        stage_started_at = self._stage_started(state, "audit")
+        try:
+            request = state["request"]
+            llm_result = state["llm_result"]
+            audit_result = await self._audit_candidate(
+                request,
+                state["humanize_context"],
+                llm_result.revisedText,
+                llm_result.changes,
+            )
+            llm_result.changes = mark_high_risk_if_needed(
+                llm_result.changes,
+                audit_result.status == "fail" or _audit_requires_preservation_repair(audit_result),
+            )
+            result: RewriteState = {"audit_result": audit_result, "llm_result": llm_result}
+        except Exception as exc:
+            self._stage_failed(state, "audit", stage_started_at, exc)
+            raise
+
+        self._stage_succeeded(
+            state,
+            "audit",
+            stage_started_at,
+            details={
+                "result_status": audit_result.status,
+                "warnings_count": len(audit_result.warnings),
+                "flagged_edits_count": len(audit_result.flaggedEdits),
+                "high_risk_change_count": len(audit_result.highRiskChangeIndexes),
+                "rollback_required_count": audit_result.rollbackRequired,
+                "edits_flagged_count": audit_result.editsFlagged,
+                "edits_passed_count": audit_result.editsPassed,
+                "review_required": _audit_requires_review(audit_result),
+            },
         )
-        llm_result.changes = mark_high_risk_if_needed(
-            llm_result.changes,
-            audit_result.status == "fail" or _audit_requires_preservation_repair(audit_result),
-        )
-        return {"audit_result": audit_result, "llm_result": llm_result}
+        return result
 
     async def _audit_candidate(
         self,
@@ -185,64 +310,113 @@ class RewriteGraphRunner:
         )
 
     async def _review(self, state: RewriteState) -> RewriteState:
-        request = state["request"]
-        llm_result = state["llm_result"]
+        stage_started_at = self._stage_started(state, "review")
+        try:
+            request = state["request"]
+            llm_result = state["llm_result"]
 
-        if hasattr(self.llm, "review"):
-            review_result: StrictReviewResult = await self.llm.review(  # type: ignore[attr-defined]
-                request,
-                state["humanize_context"],
-                llm_result.revisedText,
-                state["audit_result"],
+            if hasattr(self.llm, "review"):
+                review_result: StrictReviewResult = await self.llm.review(  # type: ignore[attr-defined]
+                    request,
+                    state["humanize_context"],
+                    llm_result.revisedText,
+                    state["audit_result"],
+                )
+                implementation = "review"
+            else:
+                review_result = _local_repair_review(
+                    request,
+                    llm_result,
+                    state["audit_result"],
+                )
+                implementation = "local_repair_review"
+            final_llm_result = LLMRewriteResult(
+                revisedText=review_result.revisedText,
+                changes=review_result.changes,
+                summary=review_result.summary,
+                inputTokens=review_result.inputTokens,
+                outputTokens=review_result.outputTokens,
             )
-        else:
-            review_result = _local_repair_review(
-                request,
-                llm_result,
-                state["audit_result"],
-            )
-        final_llm_result = LLMRewriteResult(
-            revisedText=review_result.revisedText,
-            changes=review_result.changes,
-            summary=review_result.summary,
-            inputTokens=review_result.inputTokens,
-            outputTokens=review_result.outputTokens,
+            result: RewriteState = {
+                "review_result": review_result,
+                "llm_result": final_llm_result,
+            }
+        except Exception as exc:
+            self._stage_failed(state, "review", stage_started_at, exc)
+            raise
+
+        self._stage_succeeded(
+            state,
+            "review",
+            stage_started_at,
+            details={
+                "implementation": implementation,
+                "result_status": review_result.finalAuditStatus,
+                "quality_level": review_result.qualityLevel,
+                "revised_text_length": len(review_result.revisedText),
+                "changes_count": len(review_result.changes),
+                "summary_count": len(review_result.summary),
+                "warnings_count": len(review_result.warnings),
+                "final_warnings_count": len(review_result.finalAuditWarnings),
+                "blocking_issues_count": len(review_result.finalBlockingIssues),
+                "input_tokens": review_result.inputTokens,
+                "output_tokens": review_result.outputTokens,
+            },
         )
-        return {
-            "review_result": review_result,
-            "llm_result": final_llm_result,
-        }
+        return result
 
     async def _finalize(self, state: RewriteState) -> RewriteState:
-        llm_result = state["llm_result"]
-        warnings = list(state.get("warnings", []))
-        audit_result = state.get("audit_result")
-        review_result = state.get("review_result")
-        if audit_result and not review_result:
-            warnings.extend(audit_result.warnings)
-        if review_result:
-            warnings.extend(review_result.warnings)
-            warnings.extend(review_result.finalAuditWarnings)
-            warnings.extend(review_result.finalBlockingIssues)
-        display_safe_changes = build_display_safe_changes(
-            state["request"].text,
-            llm_result.revisedText,
-            llm_result.changes,
+        stage_started_at = self._stage_started(state, "finalize")
+        try:
+            llm_result = state["llm_result"]
+            warnings = list(state.get("warnings", []))
+            audit_result = state.get("audit_result")
+            review_result = state.get("review_result")
+            if audit_result and not review_result:
+                warnings.extend(audit_result.warnings)
+            if review_result:
+                warnings.extend(review_result.warnings)
+                warnings.extend(review_result.finalAuditWarnings)
+                warnings.extend(review_result.finalBlockingIssues)
+            display_safe_changes = build_display_safe_changes(
+                state["request"].text,
+                llm_result.revisedText,
+                llm_result.changes,
+            )
+            latency_ms = int((time.perf_counter() - state["started_at"]) * 1000)
+            response = RewriteResponse(
+                revisedText=llm_result.revisedText,
+                changes=display_safe_changes,
+                summary=llm_result.summary,
+                warnings=_dedupe(warnings),
+                usage=Usage(
+                    inputTokens=_sum_input_tokens(state),
+                    outputTokens=_sum_output_tokens(state),
+                    latencyMs=latency_ms,
+                    rounds=max(1, state.get("round", 1)),
+                ),
+            )
+            result: RewriteState = {"response": response}
+        except Exception as exc:
+            self._stage_failed(state, "finalize", stage_started_at, exc)
+            raise
+
+        self._stage_succeeded(
+            state,
+            "finalize",
+            stage_started_at,
+            details={
+                "revised_text_length": len(response.revisedText),
+                "changes_count": len(response.changes),
+                "summary_count": len(response.summary),
+                "warnings_count": len(response.warnings),
+                "input_tokens": response.usage.inputTokens,
+                "output_tokens": response.usage.outputTokens,
+                "latency_ms": response.usage.latencyMs,
+                "rounds": response.usage.rounds,
+            },
         )
-        latency_ms = int((time.perf_counter() - state["started_at"]) * 1000)
-        response = RewriteResponse(
-            revisedText=llm_result.revisedText,
-            changes=display_safe_changes,
-            summary=llm_result.summary,
-            warnings=_dedupe(warnings),
-            usage=Usage(
-                inputTokens=_sum_input_tokens(state),
-                outputTokens=_sum_output_tokens(state),
-                latencyMs=latency_ms,
-                rounds=max(1, state.get("round", 1)),
-            ),
-        )
-        return {"response": response}
+        return result
 
 
 def _route_after_audit(state: RewriteState) -> str:
@@ -250,6 +424,28 @@ def _route_after_audit(state: RewriteState) -> str:
     if audit_result is not None and _audit_requires_review(audit_result):
         return "review"
     return "finalize"
+
+
+def _request_debug_details(request: RewriteRequest) -> dict[str, object]:
+    return {
+        "rewrite_mode": request.rewrite_mode,
+        "tone": request.tone,
+        "max_rounds": request.max_rounds,
+        "preserve_formatting": request.preserve_formatting,
+        "text_length": len(request.text),
+        "protected_terms_count": len(request.protected_terms),
+        "user_intent_length": len(request.user_intent),
+    }
+
+
+def _error_code_from_exception(exc: Exception) -> str:
+    if isinstance(exc, InputLimitError):
+        return "input_limit_exceeded"
+    if isinstance(exc, LLMConfigurationError):
+        return "model_not_configured"
+    if isinstance(exc, LLMResponseError):
+        return "invalid_model_response"
+    return "internal_error"
 
 
 def _audit_requires_review(audit_result: AuditResult) -> bool:

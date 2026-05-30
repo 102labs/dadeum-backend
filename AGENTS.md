@@ -33,6 +33,27 @@ Docker Compose
 Caddy
 ```
 
+## Production Operations
+
+The running production Lightsail Core service is deployed on AWS Lightsail Ubuntu.
+The source checkout on the server is:
+
+```text
+/opt/dadeum/dadeum-backend
+```
+
+Use this as the base path when giving production operation commands. The Core
+compose project lives under:
+
+```text
+/opt/dadeum/dadeum-backend/services/humanize-core
+```
+
+Production Docker Compose reads `services/humanize-core/.env`. The compose file
+mounts the named Docker volume `humanize-core-data` at `/data` inside the
+`humanize-core` container, so persistent Core runtime files should prefer
+`/data/...` paths unless a host bind mount is intentionally added.
+
 ## Lightsail Core API
 
 Required endpoints:
@@ -179,6 +200,8 @@ HUMANIZE_MAX_CHARS=5000
 HUMANIZE_JOB_STORE_PATH
 HUMANIZE_JOB_ENCRYPTION_KEY
 HUMANIZE_JOB_RETENTION_SECONDS
+HUMANIZE_DEBUG_LOG_ENABLED=true
+HUMANIZE_DEBUG_LOG_DIR=~/.dadeum/humanize-core/logs
 ```
 
 Local tests may use:
@@ -192,6 +215,20 @@ OpenAI production calls should use the Responses API with strict JSON Schema
 structured output, not legacy `json_object` mode. The model should generate only
 `revisedText`, `changes`, and `summary`; Core should fill token usage from API
 response metadata.
+
+## Debug Logging
+
+Core keeps privacy-safe step logs for rewrite debugging. The default location is:
+
+```text
+~/.dadeum/humanize-core/logs/YYYY-MM-DD.jsonl
+```
+
+These logs should make asynchronous job behavior debuggable by recording request/job ids, graph step names, per-step durations, statuses, token counts, warning/change counts, retry decisions, and error codes.
+
+Never write plaintext source text, rewritten text, diff bodies, finding bodies, protected term values, user intent text, prompts, raw LLM request/response bodies, encrypted payload bytes, or decrypted job payload/result values to debug logs. Log lengths/counts/statuses instead.
+
+When developing core features, use the local `log` skill as the workflow reminder: add privacy-safe operational logs for important pipeline stages, document where they are stored, and add tests proving sensitive text is not persisted.
 
 ## Next.js SaaS Scope
 

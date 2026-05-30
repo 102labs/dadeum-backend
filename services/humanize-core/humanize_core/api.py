@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from humanize_core.config import Settings, get_settings
+from humanize_core.debug_log import RewriteDebugLogger
 from humanize_core.graph import InputLimitError, RewriteGraphRunner
 from humanize_core.jobs import RewriteJobError, RewriteJobManager
 from humanize_core.llm import LLMConfigurationError, LLMResponseError, create_llm
@@ -22,6 +23,7 @@ def create_app(
     job_manager: RewriteJobManager | None = None,
 ) -> FastAPI:
     runtime_settings = settings or get_settings()
+    debug_log = RewriteDebugLogger(runtime_settings)
 
     if graph_runner is None:
         llm = create_llm(
@@ -38,7 +40,7 @@ def create_app(
             strict_audit_model_name=runtime_settings.strict_audit_model_name,
             strict_review_model_name=runtime_settings.strict_review_model_name,
         )
-        graph_runner = RewriteGraphRunner(runtime_settings, llm)
+        graph_runner = RewriteGraphRunner(runtime_settings, llm, debug_log)
 
     runtime_job_manager = job_manager or RewriteJobManager(runtime_settings, graph_runner)
 
@@ -74,6 +76,20 @@ def create_app(
             )
 
         request_id = request.headers.get("X-Request-Id", "")
+        debug_log.event(
+            "api.rewrite.accepted",
+            request_id=request_id,
+            status="accepted",
+            details={
+                "rewrite_mode": rewrite_request.rewrite_mode,
+                "tone": rewrite_request.tone,
+                "text_length": len(rewrite_request.text),
+                "protected_terms_count": len(rewrite_request.protected_terms),
+                "user_intent_length": len(rewrite_request.user_intent),
+                "max_rounds": rewrite_request.max_rounds,
+                "preserve_formatting": rewrite_request.preserve_formatting,
+            },
+        )
         if rewrite_request.rewrite_mode == "strict":
             try:
                 accepted = await runtime_job_manager.enqueue(request_id, rewrite_request)
@@ -98,25 +114,62 @@ def create_app(
             )
 
         try:
-            response = await graph_runner.run(rewrite_request)
+            response = await graph_runner.run(rewrite_request, request_id=request_id)
         except InputLimitError as exc:
+            debug_log.event(
+                "api.rewrite.failed",
+                request_id=request_id,
+                status="failed",
+                error_code="input_limit_exceeded",
+                details={"rewrite_mode": rewrite_request.rewrite_mode, "text_length": len(rewrite_request.text)},
+            )
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             ) from exc
         except LLMConfigurationError as exc:
+            debug_log.event(
+                "api.rewrite.failed",
+                request_id=request_id,
+                status="failed",
+                error_code="model_not_configured",
+                details={"rewrite_mode": rewrite_request.rewrite_mode, "text_length": len(rewrite_request.text)},
+            )
             logger.error("rewrite failed due to model configuration")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Model provider is not configured",
             ) from exc
         except LLMResponseError as exc:
+            debug_log.event(
+                "api.rewrite.failed",
+                request_id=request_id,
+                status="failed",
+                error_code="invalid_model_response",
+                details={"rewrite_mode": rewrite_request.rewrite_mode, "text_length": len(rewrite_request.text)},
+            )
             logger.error("rewrite failed due to invalid structured model response")
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Model provider returned an invalid structured response",
             ) from exc
 
+        debug_log.event(
+            "api.rewrite.succeeded",
+            request_id=request_id,
+            status="succeeded",
+            duration_ms=response.usage.latencyMs,
+            details={
+                "rewrite_mode": rewrite_request.rewrite_mode,
+                "changes_count": len(response.changes),
+                "summary_count": len(response.summary),
+                "warnings_count": len(response.warnings),
+                "input_tokens": response.usage.inputTokens,
+                "output_tokens": response.usage.outputTokens,
+                "rounds": response.usage.rounds,
+                "revised_text_length": len(response.revisedText),
+            },
+        )
         logger.info(
             "rewrite succeeded",
             extra={

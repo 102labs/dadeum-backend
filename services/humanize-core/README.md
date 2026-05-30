@@ -102,6 +102,8 @@ HUMANIZE_STRICT_AUDIT_MODEL_NAME=~anthropic/claude-haiku-latest
 HUMANIZE_STRICT_REVIEW_MODEL_NAME=openai/gpt-5.4-mini
 HUMANIZE_JOB_STORE_PATH=/data/humanize_jobs.sqlite3
 HUMANIZE_JOB_ENCRYPTION_KEY=<32-byte base64url or hex key>
+HUMANIZE_DEBUG_LOG_ENABLED=true
+HUMANIZE_DEBUG_LOG_DIR=~/.dadeum/humanize-core/logs
 ```
 
 `rewrite_mode` defaults to `fast`; strict requests run through the durable async
@@ -128,6 +130,30 @@ The OpenRouter provider uses Chat Completions with `response_format:
 json_schema` for rewrite, audit, and review. It sets provider routing to require
 models that support the requested structured-output parameters.
 
+## Async Debug Logs
+
+Strict async jobs write privacy-safe operational logs to daily JSONL files:
+
+```text
+~/.dadeum/humanize-core/logs/YYYY-MM-DD.jsonl
+```
+
+Override the directory with `HUMANIZE_DEBUG_LOG_DIR`; disable the file logs with
+`HUMANIZE_DEBUG_LOG_ENABLED=false`.
+
+Quick checks:
+
+```bash
+tail -f ~/.dadeum/humanize-core/logs/$(date +%F).jsonl
+tail -n 1 ~/.dadeum/humanize-core/logs/$(date +%F).jsonl | python -m json.tool
+```
+
+Each line is one event. Useful event names include `job.enqueued`,
+`job.claimed`, `graph.stage.started`, `graph.stage.succeeded`,
+`graph.stage.failed`, `job.succeeded`, and `job.failed`. Events include
+request/job ids, step names, durations, statuses, token counts,
+warning/change counts, retry decisions, and error codes.
+
 ## Privacy Boundary
 
 Fast synchronous requests keep source text and rewritten text in process memory
@@ -138,4 +164,7 @@ results, with a TTL controlled by `HUMANIZE_JOB_RETENTION_SECONDS`. The worker
 deletes the encrypted source payload after terminal success or final failure.
 The service still does not write plaintext request bodies, plaintext model raw
 bodies, plaintext rewrite output, plaintext diffs, or plaintext findings to a
-database or log.
+database or log. Debug logs also avoid protected term values, user intent text,
+prompts, raw LLM request/response bodies, encrypted payload bytes, and decrypted
+job payload/result values; they store lengths, counts, statuses, timings, and
+error codes instead.

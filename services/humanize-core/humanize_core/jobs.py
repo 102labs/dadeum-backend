@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pydantic import ValidationError
 
 from humanize_core.config import Settings
+from humanize_core.debug_log import RewriteDebugLogger
 from humanize_core.graph import InputLimitError, RewriteGraphRunner
 from humanize_core.llm import LLMConfigurationError, LLMResponseError
 from humanize_core.schemas import (
@@ -413,6 +414,7 @@ class RewriteJobManager:
     ) -> None:
         self.settings = settings
         self.graph_runner = graph_runner
+        self.debug_log = RewriteDebugLogger(settings)
         self._store = store
         self.worker_id = f"humanize-core-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         self._stop_event = asyncio.Event()
@@ -449,6 +451,20 @@ class RewriteJobManager:
 
     async def enqueue(self, request_id: str, request: RewriteRequest) -> RewriteJobAccepted:
         record = self.store.create_job(request_id, request)
+        self.debug_log.event(
+            "job.enqueued",
+            request_id=record.request_id,
+            job_id=record.job_id,
+            status=record.status,
+            details={
+                "rewrite_mode": record.rewrite_mode,
+                "text_length": record.text_length,
+                "attempts": record.attempts,
+                "max_attempts": record.max_attempts,
+                "poll_after_ms": max(250, int(self.settings.job_poll_interval_seconds * 1000)),
+                "expires_at": _to_datetime(record.expires_at).isoformat() if record.expires_at else None,
+            },
+        )
         return RewriteJobAccepted(
             jobId=record.job_id,
             requestId=record.request_id,
@@ -460,19 +476,42 @@ class RewriteJobManager:
         self.store.expire_jobs()
         record = self.store.get(job_id)
         if record is None:
+            self.debug_log.event("job.status.not_found", job_id=job_id, status="not_found")
             return None
+        self.debug_log.event(
+            "job.status.read",
+            request_id=record.request_id,
+            job_id=record.job_id,
+            status=record.status,
+            details=_job_debug_details(record),
+        )
         return self.store.status_response(record)
 
     def cancel(self, job_id: str) -> RewriteJobStatus | None:
         record = self.store.cancel(job_id)
         if record is None:
+            self.debug_log.event("job.cancel.not_found", job_id=job_id, status="not_found")
             return None
+        self.debug_log.event(
+            "job.cancelled",
+            request_id=record.request_id,
+            job_id=record.job_id,
+            status=record.status,
+            details=_job_debug_details(record),
+        )
         return self.store.status_response(record)
 
     async def process_next(self) -> bool:
         record = self.store.claim_next(self.worker_id)
         if record is None:
             return False
+        self.debug_log.event(
+            "job.claimed",
+            request_id=record.request_id,
+            job_id=record.job_id,
+            status=record.status,
+            details={**_job_debug_details(record), "worker_id": self.worker_id},
+        )
         await self._process_record(record)
         return True
 
@@ -489,10 +528,49 @@ class RewriteJobManager:
                     pass
 
     async def _process_record(self, record: RewriteJobRecord) -> None:
+        started_at = time.perf_counter()
+        self.debug_log.event(
+            "job.processing.started",
+            request_id=record.request_id,
+            job_id=record.job_id,
+            status="running",
+            details={**_job_debug_details(record), "worker_id": self.worker_id},
+        )
         try:
             request = self.store.load_request(record)
-            response = await self.graph_runner.run(request)
+            self.debug_log.event(
+                "job.payload.loaded",
+                request_id=record.request_id,
+                job_id=record.job_id,
+                status="succeeded",
+                details={
+                    "rewrite_mode": request.rewrite_mode,
+                    "text_length": len(request.text),
+                    "protected_terms_count": len(request.protected_terms),
+                    "user_intent_length": len(request.user_intent),
+                },
+            )
+            response = await self.graph_runner.run(request, request_id=record.request_id, job_id=record.job_id)
             self.store.complete_success(record.job_id, response)
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            self.debug_log.event(
+                "job.succeeded",
+                request_id=record.request_id,
+                job_id=record.job_id,
+                status="succeeded",
+                duration_ms=duration_ms,
+                details={
+                    **_job_debug_details(record),
+                    "latency_ms": response.usage.latencyMs,
+                    "input_tokens": response.usage.inputTokens,
+                    "output_tokens": response.usage.outputTokens,
+                    "rounds": response.usage.rounds,
+                    "changes_count": len(response.changes),
+                    "summary_count": len(response.summary),
+                    "warnings_count": len(response.warnings),
+                    "revised_text_length": len(response.revisedText),
+                },
+            )
             logger.info(
                 "rewrite job succeeded",
                 extra={
@@ -504,16 +582,43 @@ class RewriteJobManager:
             )
         except InputLimitError:
             self.store.fail_job(record.job_id, "input_limit_exceeded", retryable=False)
+            self._log_job_failed(record, started_at, "input_limit_exceeded", retryable=False)
             logger.warning("rewrite job failed due to input limit", extra={"job_id": record.job_id})
         except LLMConfigurationError:
             self.store.fail_job(record.job_id, "model_not_configured", retryable=False)
+            self._log_job_failed(record, started_at, "model_not_configured", retryable=False)
             logger.error("rewrite job failed due to model configuration", extra={"job_id": record.job_id})
         except LLMResponseError:
             self.store.fail_job(record.job_id, "invalid_model_response", retryable=True)
+            self._log_job_failed(record, started_at, "invalid_model_response", retryable=True)
             logger.warning("rewrite job failed due to invalid model response", extra={"job_id": record.job_id})
         except Exception:  # noqa: BLE001 - never let one job kill the worker loop.
             self.store.fail_job(record.job_id, "internal_error", retryable=True)
+            self._log_job_failed(record, started_at, "internal_error", retryable=True)
             logger.error("rewrite job failed", extra={"job_id": record.job_id, "error_code": "internal_error"})
+
+    def _log_job_failed(
+        self,
+        record: RewriteJobRecord,
+        started_at: float,
+        error_code: str,
+        *,
+        retryable: bool,
+    ) -> None:
+        will_retry = retryable and record.attempts < record.max_attempts
+        self.debug_log.event(
+            "job.failed",
+            request_id=record.request_id,
+            job_id=record.job_id,
+            status="queued" if will_retry else "failed",
+            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            error_code=error_code,
+            details={
+                **_job_debug_details(record),
+                "retryable": retryable,
+                "will_retry": will_retry,
+            },
+        )
 
 
 def _decode_or_derive_key(material: str) -> bytes:
@@ -538,6 +643,21 @@ def _decode_or_derive_key(material: str) -> bytes:
         pass
 
     return hashlib.sha256(value.encode("utf-8")).digest()
+
+
+def _job_debug_details(record: RewriteJobRecord) -> dict[str, Any]:
+    return {
+        "rewrite_mode": record.rewrite_mode,
+        "text_length": record.text_length,
+        "attempts": record.attempts,
+        "max_attempts": record.max_attempts,
+        "latency_ms": record.latency_ms,
+        "error_code": record.error_code,
+        "created_at": _to_datetime(record.created_at).isoformat() if record.created_at else None,
+        "started_at": _to_datetime(record.started_at).isoformat() if record.started_at else None,
+        "completed_at": _to_datetime(record.completed_at).isoformat() if record.completed_at else None,
+        "expires_at": _to_datetime(record.expires_at).isoformat() if record.expires_at else None,
+    }
 
 
 def _to_datetime(value: float | None) -> datetime | None:
