@@ -77,6 +77,14 @@ def _payload(**overrides):
     return body
 
 
+def test_settings_uses_canonical_rewrite_fallback_env(monkeypatch):
+    monkeypatch.setenv("HUMANIZE_REWRITE_FALLBACK_MODEL_NAME", "openai/fallback")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.rewrite_fallback_model_name == "openai/fallback"
+
+
 def _rulebook_context() -> dict[str, object]:
     return {
         "detectedCount": 2,
@@ -639,7 +647,7 @@ def test_rewrite_prompt_runs_active_rulebook_single_pass():
     assert "complete rewritten passage" in payload["completion_contract"]["scope"]
     assert any("revisedText is the single canonical final answer" in item for item in payload["structured_output_contract"])
     assert any("changes[].original and changes[].revised are local diff snippets only" in item for item in payload["structured_output_contract"])
-    assert "Rewrite/Audit Contract" in payload["im_not_ai_quick_rules"]
+    assert "최종 자체 검토 체크리스트" in payload["im_not_ai_quick_rules"]
     assert "detect" not in payload
     assert "문장 흐름" in rendered_payload
     assert "리듬" in rendered_payload
@@ -711,9 +719,9 @@ def test_rewrite_prompt_embeds_active_rules_without_detect_stage():
     assert "im_not_ai_quick_rules" in rewrite_payload
     assert "strict_rules" not in rewrite_payload
     assert "A-1" in rewrite_payload["im_not_ai_quick_rules"]
-    assert "Do not flag" in rewrite_payload["im_not_ai_quick_rules"]
-    assert "A-2 example" in rewrite_payload["im_not_ai_quick_rules"]
-    assert "Rewrite/Audit Contract" in rewrite_payload["im_not_ai_quick_rules"]
+    assert "의미 불변" in rewrite_payload["im_not_ai_quick_rules"]
+    assert "데이터를 분석해 인사이트를 얻는다" in rewrite_payload["im_not_ai_quick_rules"]
+    assert "최종 자체 검토 체크리스트" in rewrite_payload["im_not_ai_quick_rules"]
     assert not hasattr(resources, "ai_tell_taxonomy")
     assert hasattr(resources, "strict_rules")
 
@@ -848,7 +856,7 @@ def test_rulebook_and_rewrite_prompt_do_not_target_fixed_change_rate():
     assert "20~40%" not in strict_rules_text
     assert "changeRate" not in rendered_prompt
     assert "변경률은 품질 목표가 아니라 보존 위험 신호" in rendered_prompt
-    assert "tone 설정 체감 가능" in strict_rules_text
+    assert "장르·문체 유지" in strict_rules_text
 
 
 def test_removed_reference_resources_have_no_runtime_loaders():

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     )
     rewrite_fallback_model_name: str = Field(
         default="~anthropic/claude-haiku-latest",
-        validation_alias=AliasChoices("HUMANIZE_REWRITE_FALLBACK_MODEL_NAME", "HUMANIZE_FAST_FALLBACK_MODEL_NAME"),
+        alias="HUMANIZE_REWRITE_FALLBACK_MODEL_NAME",
     )
     strict_audit_model_name: str = Field(
         default="~anthropic/claude-haiku-latest",
