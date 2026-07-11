@@ -341,6 +341,27 @@ class RewriteGraphRunner:
                     state["audit_result"],
                 )
                 implementation = "review"
+                regressions = _review_output_regressions(
+                    request,
+                    llm_result.revisedText,
+                    review_result.revisedText,
+                )
+                if regressions:
+                    fallback = _local_repair_review(request, llm_result, state["audit_result"])
+                    review_result = fallback.model_copy(
+                        update={
+                            "warnings": _dedupe(
+                                [
+                                    "모델 review 출력이 완성도·보존 재검증에 실패해 로컬 복원 결과로 대체했습니다.",
+                                    *regressions,
+                                    *fallback.warnings,
+                                ]
+                            ),
+                            "inputTokens": review_result.inputTokens,
+                            "outputTokens": review_result.outputTokens,
+                        }
+                    )
+                    implementation = "local_repair_review_fallback"
             else:
                 review_result = _local_repair_review(
                     request,
@@ -522,16 +543,17 @@ def _compact_rulebook_hints(findings: list[Finding]) -> list[RulebookHint]:
             finding.id,
         ),
     )
+    category_counts = Counter(finding.category for finding in findings)
     hints: list[RulebookHint] = []
     seen_categories: set[str] = set()
     for finding in sorted_findings:
         if finding.severity not in {"S1", "S2"}:
             continue
         # Keep the prompt compact and avoid raw source spans. Prefer category
-        # diversity first, then fill any remaining slots below.
+        # diversity first; occurrence counts convey repetition without spans.
         if finding.category in seen_categories:
             continue
-        hints.append(_rulebook_hint_from_finding(finding))
+        hints.append(_rulebook_hint_from_finding(finding, category_counts[finding.category]))
         seen_categories.add(finding.category)
         if len(hints) >= 8:
             return hints
@@ -543,11 +565,11 @@ def _compact_rulebook_hints(findings: list[Finding]) -> list[RulebookHint]:
             continue
         if any(hint.id == finding.id for hint in hints):
             continue
-        hints.append(_rulebook_hint_from_finding(finding))
+        hints.append(_rulebook_hint_from_finding(finding, category_counts[finding.category]))
     return hints
 
 
-def _rulebook_hint_from_finding(finding: Finding) -> RulebookHint:
+def _rulebook_hint_from_finding(finding: Finding, occurrences: int = 1) -> RulebookHint:
     return RulebookHint(
         id=finding.id,
         category=finding.category,
@@ -555,6 +577,7 @@ def _rulebook_hint_from_finding(finding: Finding) -> RulebookHint:
         severity=finding.severity,
         scope=finding.scope,
         suggestedFix=finding.suggestedFix,
+        occurrences=max(1, occurrences),
     )
 
 
@@ -750,6 +773,27 @@ def _restore_original_sentence_for_value(original: str, revised: str, value: str
 
 def _clean_repaired_text(text: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
+
+
+def _review_output_regressions(
+    request: RewriteRequest,
+    draft_text: str,
+    review_text: str,
+) -> list[str]:
+    # Flag only damage the review step introduced relative to the draft; a
+    # draft that was already incomplete ships with warnings instead of being
+    # stitched back together locally.
+    draft_completion = set(_completion_warnings(request, draft_text))
+    reasons = [
+        warning
+        for warning in _completion_warnings(request, review_text)
+        if warning not in draft_completion
+    ]
+    draft_flagged = _local_preservation_flagged_edits(request, draft_text)
+    review_flagged = _local_preservation_flagged_edits(request, review_text)
+    if len(review_flagged) > len(draft_flagged):
+        reasons.append("Review 출력에서 보존 대상 훼손이 초안보다 늘었습니다.")
+    return _dedupe(reasons)
 
 
 def _audit_requires_preservation_repair(audit_result: AuditResult) -> bool:

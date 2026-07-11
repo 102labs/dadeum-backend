@@ -27,7 +27,10 @@ def rewrite_system_prompt() -> str:
         "revisedText must differ from the original with concrete wording edits whenever any safe expression can be improved. "
         "Use user_intent, tone, and preserve_formatting to choose tone and formatting. "
         "Do not add new claims, examples, metaphors, facts, or citations. "
-        "Do not expose hidden reasoning. Return only JSON matching the schema."
+        "Do not expose hidden reasoning. Return only JSON matching the schema.\n\n"
+        "아래는 모든 rewrite 판단의 기준이 되는 한국어 윤문 룰북(im_not_ai_quick_rules)이다. "
+        "사용자 메시지의 원문에 룰북을 적극 적용한다.\n\n"
+        + strict_rules()
     )
 
 
@@ -36,8 +39,7 @@ def rewrite_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str
         **_prompt_header("rewrite", request),
         "rulebook": "active-rewrite-rules",
         "rewrite_pass": "active_rulebook_single_pass",
-        "im_not_ai_quick_rules": strict_rules(),
-        "rewrite_strategy": "active_rulebook_single_pass: 룰북을 적극 적용해 원문 전체를 바로 윤문하고, 완성본 전체를 revisedText로 반환한다. 보존 감사는 다음 audit 단계가 담당한다.",
+        "rewrite_strategy": "active_rulebook_single_pass: 시스템 프롬프트의 룰북(im_not_ai_quick_rules)을 적극 적용해 원문 전체를 바로 윤문하고, 완성본 전체를 revisedText로 반환한다. 보존 감사는 다음 audit 단계가 담당한다.",
         "rewrite_scope": "문장 흐름, 어순, 리듬, 연결, 명확성, 번역투, 반복 구조, AI 티 패턴을 전체 글 기준으로 적극 다듬고 여러 구간에서 실제 표현을 개선하되 원문의 의미와 정보량은 보존한다.",
         "must_edit_policy": [
             "원문을 그대로 반환하는 것은 rewrite 실패다.",
@@ -298,6 +300,7 @@ def _rewrite_priorities(context: dict[str, Any]) -> dict[str, Any]:
                 "severity": str(item.get("severity", "")),
                 "scope": str(item.get("scope", "")),
                 "suggestedFix": str(item.get("suggestedFix", "")),
+                "occurrences": int(item.get("occurrences", 1) or 1),
             }
         )
     if not hints:

@@ -640,14 +640,15 @@ def test_rewrite_prompt_runs_active_rulebook_single_pass():
     assert any("최소 하나 이상의 안전한 표현 개선" in item for item in payload["must_edit_policy"])
     assert "completion_contract" in payload
     assert "structured_output_contract" in payload
-    assert "im_not_ai_quick_rules" in payload
+    assert "im_not_ai_quick_rules" not in payload
     assert "exact_preserve_targets" not in payload
     assert "active_rulebook_single_pass" in payload["rewrite_strategy"]
     assert payload["completion_contract"]["originalCharCount"] == len(request.text)
     assert "complete rewritten passage" in payload["completion_contract"]["scope"]
     assert any("revisedText is the single canonical final answer" in item for item in payload["structured_output_contract"])
     assert any("changes[].original and changes[].revised are local diff snippets only" in item for item in payload["structured_output_contract"])
-    assert "최종 자체 검토 체크리스트" in payload["im_not_ai_quick_rules"]
+    assert "im_not_ai_quick_rules" in system_prompt
+    assert "최종 자체 검토 체크리스트" in system_prompt
     assert "detect" not in payload
     assert "문장 흐름" in rendered_payload
     assert "리듬" in rendered_payload
@@ -716,12 +717,14 @@ def test_rewrite_prompt_embeds_active_rules_without_detect_stage():
     assert not hasattr(prompts, "detect_user_prompt")
     assert not hasattr(prompts, "strict_rewrite_user_prompt")
     assert rewrite_payload["rulebook"] == "active-rewrite-rules"
-    assert "im_not_ai_quick_rules" in rewrite_payload
+    assert "im_not_ai_quick_rules" not in rewrite_payload
     assert "strict_rules" not in rewrite_payload
-    assert "A-1" in rewrite_payload["im_not_ai_quick_rules"]
-    assert "의미 불변" in rewrite_payload["im_not_ai_quick_rules"]
-    assert "데이터를 분석해 인사이트를 얻는다" in rewrite_payload["im_not_ai_quick_rules"]
-    assert "최종 자체 검토 체크리스트" in rewrite_payload["im_not_ai_quick_rules"]
+
+    system_prompt = prompts.rewrite_system_prompt()
+    assert "A-1" in system_prompt
+    assert "의미 불변" in system_prompt
+    assert "데이터를 분석해 인사이트를 얻는다" in system_prompt
+    assert "최종 자체 검토 체크리스트" in system_prompt
     assert not hasattr(resources, "ai_tell_taxonomy")
     assert hasattr(resources, "strict_rules")
 
@@ -792,7 +795,7 @@ def test_rewrite_audit_review_prompts_follow_single_routine():
     audit_result = AuditResult(status="full_pass", reason="통과")
     review_prompt = prompts.review_user_prompt(request, context, request.text, audit_result)
 
-    assert "im_not_ai_quick_rules" in json.loads(rewrite_prompt)
+    assert "im_not_ai_quick_rules" not in json.loads(rewrite_prompt)
     assert "rewrite_priorities" in json.loads(rewrite_prompt)
     assert "preservation_audit" in json.loads(review_prompt)
     assert "exact_preserve_targets" not in json.loads(rewrite_prompt)
@@ -800,7 +803,9 @@ def test_rewrite_audit_review_prompts_follow_single_routine():
     assert "exact_preserve_targets" in json.loads(review_prompt)
     assert "rewrite_priorities" not in audit_prompt
     assert "rewrite_priorities" not in review_prompt
-    assert len(review_prompt) < len(rewrite_prompt)
+    assert "최종 자체 검토 체크리스트" in prompts.rewrite_system_prompt()
+    assert "최종 자체 검토 체크리스트" not in audit_prompt
+    assert "최종 자체 검토 체크리스트" not in review_prompt
 
 
 def test_strict_audit_prompt_does_not_embed_scholarship_reference():
@@ -941,7 +946,8 @@ async def test_prepare_context_contains_compact_rulebook_hints():
     assert len(context["rulebookHints"]) <= 8
     assert {hint["category"] for hint in context["rulebookHints"]} >= {"A-2", "A-7"}
     for hint in context["rulebookHints"]:
-        assert set(hint) == {"id", "category", "categoryLabel", "severity", "scope", "suggestedFix"}
+        assert set(hint) == {"id", "category", "categoryLabel", "severity", "scope", "suggestedFix", "occurrences"}
+        assert hint["occurrences"] >= 1
         assert "textSpan" not in hint
         assert "start" not in hint
         assert "end" not in hint
@@ -1154,6 +1160,59 @@ def test_a8_double_passive_golden_case():
 
     assert "A-8" in {finding.category for finding in detection.findings}
     assert double_passive_count(text) >= 1
+
+
+def test_local_detector_ignores_common_false_positive_words():
+    cases = [
+        ("H-3", "성과가 눈에 보이는 수준으로 늘었고 비용을 줄이는 방법도 찾았다."),
+        ("H-4", "요청을 즉시 처리했고 즉각 대응했다."),
+        ("A-16", "그 사람은 그 결과를 보고 그 자리에서 결정했다."),
+        ("C-7", "성과를 반면교사로 삼아 계획을 다듬었다."),
+        ("D-6", "우리는 계획을 실행해야 한다."),
+        ("G-3", "예산의 균형을 신중하게 검토했다."),
+    ]
+
+    for rule_id, text in cases:
+        detection = local_detect(text, focus_categories=[rule_id])
+        assert rule_id not in {finding.category for finding in detection.findings}
+
+
+def test_local_detector_still_flags_true_meta_and_connector_patterns():
+    cases = [
+        ("H-3", "이는 우리가 준비한 계획의 핵심이다."),
+        ("H-4", "핵심 지표, 즉 재방문율을 먼저 본다."),
+        ("C-7", "먼저 비용을 줄인다. 반면 품질은 유지한다. 결국 균형이 관건이다."),
+        ("A-16", "그는 말했다. 그녀의 의견도 같았다."),
+    ]
+
+    for rule_id, text in cases:
+        detection = local_detect(text, focus_categories=[rule_id])
+        assert rule_id in {finding.category for finding in detection.findings}
+
+
+async def test_rulebook_hints_include_occurrence_counts():
+    captured = {}
+
+    class CapturingLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            captured["context"] = context
+            return RewriteResult(
+                revisedText=request.text,
+                changes=[Change(original="", revised="", reason="유지했습니다.", type="clarity", riskLevel="low")],
+                summary=["유지했습니다."],
+            )
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(text="계획을 통해 정리했고 실행을 통해 검증했으며 회고를 통해 개선했습니다.")
+    )
+
+    await RewriteGraphRunner(_settings(), CapturingLLM()).run(request)
+
+    hints = {hint["category"]: hint for hint in captured["context"]["rulebookHints"]}
+    assert hints["A-2"]["occurrences"] >= 3
 
 
 async def test_local_review_restores_flagged_sentence_when_preserved_values_are_removed():
@@ -1697,6 +1756,58 @@ async def test_strict_rewrite_does_not_repair_incomplete_revised_text_from_chang
     assert not any("revisedText가 불완전" in item for item in response.summary)
     assert not any("원문을 반환" in warning for warning in response.warnings)
     assert any("출력 잘림" in warning for warning in response.warnings)
+
+
+async def test_model_review_that_damages_preserved_values_falls_back_to_local_repair():
+    draft = "2026년 5월 출시 일정은 유지합니다. 세부 계획은 다시 정리했습니다."
+
+    class DamagingReviewLLM:
+        async def rewrite(self, request):
+            raise AssertionError("strict graph should call node-specific methods")
+
+        async def rewrite_once(self, request, context):
+            return RewriteResult(
+                revisedText=draft,
+                changes=[
+                    Change(
+                        original="정리했습니다",
+                        revised="다시 정리했습니다",
+                        reason="표현을 명확히 했습니다.",
+                        type="clarity",
+                        riskLevel="low",
+                    )
+                ],
+                summary=["일정 표현을 정리했습니다."],
+            )
+
+        async def audit(self, request, context, revised_text, changes):
+            return AuditResult(
+                status="conditional_pass",
+                flaggedEdits=[
+                    {
+                        "issue": "사람이 확인할 경미한 주의점입니다.",
+                        "action": "warning",
+                        "severity": "low",
+                    }
+                ],
+                reason="경미한 확인 항목이 있습니다.",
+            )
+
+        async def review(self, request, context, revised_text, audit_result):
+            return _strict_review_result(request, "출시 일정은 유지합니다.")
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            text="2026년 5월 출시 일정은 유지합니다. 세부 계획은 정리했습니다.",
+            rewrite_mode="strict",
+        )
+    )
+    response = await RewriteGraphRunner(_settings(), DamagingReviewLLM()).run(request)
+
+    assert response.revisedText == draft
+    assert "2026년 5월" in response.revisedText
+    assert any("로컬 복원 결과로 대체했습니다" in warning for warning in response.warnings)
+    assert any("보존 대상 훼손이 초안보다 늘었습니다" in warning for warning in response.warnings)
 
 
 async def test_strict_review_can_return_safe_final_candidate_without_rewrite_loop():

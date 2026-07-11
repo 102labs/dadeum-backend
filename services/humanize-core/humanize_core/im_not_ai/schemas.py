@@ -126,6 +126,7 @@ class RulebookHint(BaseModel):
     severity: Severity
     scope: FindingScope
     suggestedFix: str
+    occurrences: int = 1
 
 
 class HumanizeContext(BaseModel):

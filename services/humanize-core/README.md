@@ -116,12 +116,18 @@ prepare -> rewrite -> audit -> review? -> finalize
 ```
 
 The worker executes the same graph for strict jobs. `rewrite` performs one
-full-pass rewrite using `strict-rules.md`. `audit`
+full-pass rewrite using `strict-rules.md`. The full rulebook rides in the
+static system prompt so providers can prefix-cache it; the per-request user
+payload carries only the text, settings, and compact rulebook hints (with
+occurrence counts, never raw source spans). `audit`
 compares the draft to the original and flags only harmful preservation problems:
 changed facts, numbers, dates, units, names, quotations, protected terms, order,
 polarity, causality, omitted content, or added claims. If audit has no repair
 items, the graph finalizes immediately. If audit finds a repair item, `review`
-applies only those corrections and returns the final candidate.
+applies only those corrections and returns the final candidate. The graph
+re-checks the model review output locally; if the review step itself truncated
+the text or damaged preserved values relative to the draft, the graph discards
+it and falls back to the local repair path with a warning.
 
 The OpenAI provider uses the Responses API with strict JSON Schema structured
 output for `revisedText`, `changes`, and `summary`. Usage metrics come from the
