@@ -196,6 +196,27 @@ class OpenRouterRewriteLLM:
             max_tokens=MAX_OUTPUT_TOKENS,
         )
 
+    async def style_repair(
+        self,
+        request: RewriteRequest,
+        draft_text: str,
+        residual_hints: list[dict[str, Any]],
+        smooth_transitions: bool,
+    ) -> RewriteResult:
+        return await self._chat_structured(
+            models=self.rewrite_models,
+            schema_name="style_repair_result",
+            result_type=RewriteResult,
+            system=prompts.style_repair_system_prompt(),
+            user=prompts.style_repair_user_prompt(
+                request,
+                draft_text,
+                residual_hints,
+                smooth_transitions,
+            ),
+            max_tokens=MAX_OUTPUT_TOKENS,
+        )
+
     async def audit(
         self,
         request: RewriteRequest,

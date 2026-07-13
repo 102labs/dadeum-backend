@@ -3,7 +3,7 @@ import re
 from typing import Any
 
 from humanize_core.im_not_ai.preservation import exact_preserve_targets as build_exact_preserve_targets
-from humanize_core.im_not_ai.resources import strict_rules
+from humanize_core.im_not_ai.resources import compact_strict_rules, rule_card
 from humanize_core.im_not_ai.schemas import AuditResult
 from humanize_core.schemas import RewriteRequest
 
@@ -28,9 +28,13 @@ def rewrite_system_prompt() -> str:
         "Use user_intent, tone, and preserve_formatting to choose tone and formatting. "
         "Do not add new claims, examples, metaphors, facts, or citations. "
         "Do not expose hidden reasoning. Return only JSON matching the schema.\n\n"
-        "아래는 모든 rewrite 판단의 기준이 되는 한국어 윤문 룰북(im_not_ai_quick_rules)이다. "
-        "사용자 메시지의 원문에 룰북을 적극 적용한다.\n\n"
-        + strict_rules()
+        "아래는 모든 rewrite 판단의 기준이 되는 한국어 윤문 룰북(im_not_ai_quick_rules)의 압축본이다. "
+        "적용 원칙, 보존 규칙, 처리 순서, 전체 룰 목록(제목·심각도)을 담고 있으며, "
+        "사용자 메시지의 원문에 이 원칙을 적극 적용한다. "
+        "원문에서 자동 탐지된 룰의 상세 카드(윤문 대상·수정 방안·보존 예외)는 사용자 메시지의 "
+        "rewrite_priorities.rulebook_hints[].ruleCard로 전달되므로, 탐지된 룰은 카드 기준으로 반드시 처리하고 "
+        "목록에만 있는 룰도 원칙과 제목을 근거로 함께 살핀다.\n\n"
+        + compact_strict_rules()
     )
 
 
@@ -286,32 +290,88 @@ def _prompt_sentences(text: str) -> list[str]:
     ]
 
 
+_MAX_PROMPT_HINTS = 24
+_MAX_HINT_MATCHES = 4
+
+
+def rulebook_hint_payload(item: dict[str, Any]) -> dict[str, Any]:
+    rule_id = str(item.get("category", ""))
+    raw_matches = item.get("matches") or []
+    matches = [str(match) for match in raw_matches if str(match).strip()][:_MAX_HINT_MATCHES]
+    return {
+        "id": str(item.get("id", "")),
+        "category": rule_id,
+        "categoryLabel": str(item.get("categoryLabel", "")),
+        "severity": str(item.get("severity", "")),
+        "scope": str(item.get("scope", "")),
+        "suggestedFix": str(item.get("suggestedFix", "")),
+        "occurrences": int(item.get("occurrences", 1) or 1),
+        "matches": matches,
+        "ruleCard": rule_card(rule_id),
+    }
+
+
 def _rewrite_priorities(context: dict[str, Any]) -> dict[str, Any]:
     raw_hints = context.get("rulebookHints") or []
-    hints: list[dict[str, str]] = []
-    for item in raw_hints[:8]:
-        if not isinstance(item, dict):
-            continue
-        hints.append(
-            {
-                "id": str(item.get("id", "")),
-                "category": str(item.get("category", "")),
-                "categoryLabel": str(item.get("categoryLabel", "")),
-                "severity": str(item.get("severity", "")),
-                "scope": str(item.get("scope", "")),
-                "suggestedFix": str(item.get("suggestedFix", "")),
-                "occurrences": int(item.get("occurrences", 1) or 1),
-            }
-        )
+    hints = [
+        rulebook_hint_payload(item)
+        for item in raw_hints[:_MAX_PROMPT_HINTS]
+        if isinstance(item, dict)
+    ]
     if not hints:
         return {}
     return {
-        "purpose": "원문에서 감지된 safe-edit 후보다. 의미·수치·고유명사·인용·protected_terms 보존을 우선하면서 가능한 후보를 rewrite 단계에서 해결한다.",
+        "purpose": (
+            "정규식 탐지기가 원문에서 확인한 룰 위반 후보다. 각 후보의 ruleCard(윤문 대상·수정 방안·보존 예외)와 "
+            "matches(원문에서 발견된 실제 표현 표본)를 기준으로 해당 지점을 우선 수정한다. "
+            "의미·수치·고유명사·인용·protected_terms 보존은 항상 우선한다."
+        ),
         "rulebook_hints": hints,
         "priority_policy": [
-            "S1/S2 후보를 우선 처리한다.",
-            "후보는 감사 결과가 아니라 rewrite 우선순위다.",
-            "후보 처리가 의미 보존과 충돌하면 보존을 우선한다.",
-            "원문 위치 정보와 protected term 값은 포함하지 않는다.",
+            "S1 후보를 먼저, S2 후보를 다음으로 처리한다.",
+            "matches의 표현은 본문에서 찾아 실제로 고치고, 반복 표현은 occurrences 수만큼 본문 전체에서 처리한다.",
+            "후보는 감사 결과가 아니라 rewrite 우선순위다. ruleCard의 보존 예외에 해당하면 유지한다.",
+            "후보 처리가 의미 보존과 충돌하면 보존을 우선한다. protected term 값은 후보에 포함하지 않는다.",
         ],
     }
+
+
+def style_repair_system_prompt() -> str:
+    return (
+        "You are the residual style repair step of the im-not-ai Korean business rewrite engine. "
+        "You receive a draft rewrite plus rulebook violations that a deterministic pattern gate still detects in the draft. "
+        "Fix only the listed violations, and smooth paragraph-boundary connectors only when transition_policy asks for it. "
+        "Never change facts, numbers, dates, names, quotations, URLs, code, protected terms, claims, or meaning. "
+        "Keep every sentence without a listed violation as close to the draft as possible. "
+        "Return the complete repaired passage in revisedText; excerpts, summaries, or continuations are failures. "
+        "Do not expose hidden reasoning. Return only JSON matching the schema."
+    )
+
+
+def style_repair_user_prompt(
+    request: RewriteRequest,
+    draft_text: str,
+    residual_hints: list[dict[str, Any]],
+    smooth_transitions: bool,
+) -> str:
+    payload: dict[str, Any] = {
+        "mode": "style_repair",
+        "settings": request_settings(request),
+        "repair_contract": [
+            "residual_rule_hints에 나열된 위반만 고친다. 나열되지 않은 문장은 초안 그대로 유지한다.",
+            "각 후보의 ruleCard 수정 방안을 따르되, 보존 예외에 해당하면 그대로 둔다.",
+            "revisedText에는 수리된 완성본 전체를 넣는다. 발췌, 요약, 이어쓰기는 실패다.",
+            "의미, 수치, 날짜, 고유명사, 직접 인용, protected term은 바꾸지 않는다.",
+            "changes에는 실제 수리한 로컬 변경만 기록한다.",
+        ],
+        "residual_rule_hints": [
+            rulebook_hint_payload(item) for item in residual_hints[:_MAX_PROMPT_HINTS] if isinstance(item, dict)
+        ],
+        "draft_text": draft_text,
+    }
+    if smooth_transitions:
+        payload["transition_policy"] = (
+            "이 초안은 문단 단위로 나뉘어 개별 윤문된 뒤 조립됐다. 문단 첫 문장의 접속·연결 표현이 "
+            "앞 문단과 어색하게 이어지면 연결어만 가볍게 다듬는다. 문단의 내용, 순서, 개수는 바꾸지 않는다."
+        )
+    return json.dumps(payload, ensure_ascii=False)

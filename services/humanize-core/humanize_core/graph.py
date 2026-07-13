@@ -1,3 +1,4 @@
+import asyncio
 import re
 import time
 from collections import Counter
@@ -54,6 +55,9 @@ class RewriteState(TypedDict, total=False):
     llm_result: LLMRewriteResult
     response: RewriteResponse
     started_at: float
+    chunk_count: int
+    style_gate_input_tokens: int
+    style_gate_output_tokens: int
 
 
 class RewriteGraphRunner:
@@ -87,12 +91,14 @@ class RewriteGraphRunner:
         builder = StateGraph(RewriteState)
         builder.add_node("prepare", self._prepare)
         builder.add_node("rewrite", self._rewrite)
+        builder.add_node("style_gate", self._style_gate)
         builder.add_node("audit", self._audit)
         builder.add_node("review", self._review)
         builder.add_node("finalize", self._finalize)
         builder.add_edge(START, "prepare")
         builder.add_edge("prepare", "rewrite")
-        builder.add_edge("rewrite", "audit")
+        builder.add_edge("rewrite", "style_gate")
+        builder.add_edge("style_gate", "audit")
         builder.add_conditional_edges(
             "audit",
             _route_after_audit,
@@ -192,18 +198,26 @@ class RewriteGraphRunner:
         stage_started_at = self._stage_started(state, "rewrite")
         try:
             request = state["request"]
+            chunk_count = 1
             if hasattr(self.llm, "rewrite_once"):
-                rewrite_result: RewriteResult = await self.llm.rewrite_once(  # type: ignore[attr-defined]
-                    request,
-                    state["humanize_context"],
-                )
+                chunks = self._rewrite_chunks_for(request)
+                chunk_count = len(chunks)
+                if chunk_count > 1:
+                    rewrite_result = await self._rewrite_chunked(request, chunks)
+                    implementation = "rewrite_once_chunked"
+                else:
+                    rewrite_result: RewriteResult = await self.llm.rewrite_once(  # type: ignore[attr-defined]
+                        request,
+                        state["humanize_context"],
+                    )
+                    implementation = "rewrite_once"
                 result = _rewrite_result_state(request, rewrite_result, state.get("warnings", []))
                 llm_result = result["llm_result"]
-                implementation = "rewrite_once"
             else:
                 llm_result = await self.llm.rewrite(request)
                 result = {"llm_result": llm_result, "rewrite_result": llm_result, "round": 1}
                 implementation = "rewrite"
+            result["chunk_count"] = chunk_count
         except Exception as exc:
             self._stage_failed(state, "rewrite", stage_started_at, exc)
             raise
@@ -214,6 +228,7 @@ class RewriteGraphRunner:
             stage_started_at,
             details={
                 "implementation": implementation,
+                "chunk_count": chunk_count,
                 "revised_text_length": len(llm_result.revisedText),
                 "changes_count": len(llm_result.changes),
                 "summary_count": len(llm_result.summary),
@@ -223,6 +238,149 @@ class RewriteGraphRunner:
                 "revised_text": llm_result.revisedText,
                 "changes": [change.model_dump(mode="json") for change in llm_result.changes],
                 "summary": llm_result.summary,
+            },
+        )
+        return result
+
+    def _rewrite_chunks_for(self, request: RewriteRequest) -> list[str]:
+        if len(request.text) < self.settings.chunk_min_chars:
+            return [request.text]
+        return _split_text_chunks(request.text, self.settings.chunk_target_chars)
+
+    async def _rewrite_chunked(self, request: RewriteRequest, chunks: list[str]) -> RewriteResult:
+        async def rewrite_chunk(chunk: str) -> tuple[str, RewriteResult]:
+            body = chunk.rstrip()
+            separator = chunk[len(body):]
+            if not body.strip():
+                return chunk, RewriteResult(revisedText="", changes=[], summary=[])
+            chunk_request = request.model_copy(update={"text": body})
+            detection = local_detect(body, protected_terms=request.protected_terms)
+            chunk_context = HumanizeContext(
+                detectedCount=detection.detectedCount,
+                severityWeightedScore=detection.severityWeightedScore,
+                categorySummary=detection.categorySummary,
+                rulebookHints=_compact_rulebook_hints(detection.findings),
+            ).model_dump()
+            chunk_result: RewriteResult = await self.llm.rewrite_once(  # type: ignore[attr-defined]
+                chunk_request,
+                chunk_context,
+            )
+            return separator, chunk_result
+
+        chunk_results = await asyncio.gather(*(rewrite_chunk(chunk) for chunk in chunks))
+
+        revised_parts: list[str] = []
+        changes: list[Change] = []
+        summary: list[str] = []
+        warnings: list[str] = []
+        input_tokens = 0
+        output_tokens = 0
+        for separator, chunk_result in chunk_results:
+            revised_parts.append(chunk_result.revisedText.rstrip() + separator)
+            changes.extend(chunk_result.changes)
+            summary.extend(chunk_result.summary)
+            warnings.extend(chunk_result.warnings)
+            input_tokens += chunk_result.inputTokens
+            output_tokens += chunk_result.outputTokens
+        return RewriteResult(
+            revisedText="".join(revised_parts),
+            changes=changes,
+            summary=_dedupe(summary),
+            warnings=_dedupe(warnings),
+            inputTokens=input_tokens,
+            outputTokens=output_tokens,
+        )
+
+    async def _style_gate(self, state: RewriteState) -> RewriteState:
+        stage_started_at = self._stage_started(state, "style_gate")
+        try:
+            request = state["request"]
+            llm_result = state["llm_result"]
+            chunked = state.get("chunk_count", 1) > 1
+            max_rounds = self.settings.style_gate_max_rounds
+            supported = hasattr(self.llm, "style_repair") and max_rounds > 0
+
+            detection = local_detect(llm_result.revisedText, protected_terms=request.protected_terms)
+            initial_score = detection.severityWeightedScore
+            rounds_used = 0
+            input_tokens = 0
+            output_tokens = 0
+            extra_warnings: list[str] = []
+            implementation = "style_repair" if supported else "skipped"
+
+            while supported and rounds_used < max_rounds:
+                residual_s1 = _severity_count(detection.findings, "S1")
+                residual_s2 = _severity_count(detection.findings, "S2")
+                needs_style = residual_s1 > 0 or residual_s2 >= self.settings.style_gate_s2_threshold
+                needs_transition = chunked and rounds_used == 0
+                if not needs_style and not needs_transition:
+                    break
+                residual_hints = [
+                    hint.model_dump() for hint in _compact_rulebook_hints(detection.findings)
+                ]
+                if not residual_hints and not needs_transition:
+                    break
+
+                repair: RewriteResult = await self.llm.style_repair(  # type: ignore[attr-defined]
+                    request,
+                    llm_result.revisedText,
+                    residual_hints,
+                    needs_transition,
+                )
+                rounds_used += 1
+                input_tokens += repair.inputTokens
+                output_tokens += repair.outputTokens
+
+                repaired_text = repair.revisedText
+                if not repaired_text.strip():
+                    break
+                if _style_repair_regressions(request, llm_result.revisedText, repaired_text):
+                    break
+                repaired_detection = local_detect(repaired_text, protected_terms=request.protected_terms)
+                if needs_style and repaired_detection.severityWeightedScore > detection.severityWeightedScore:
+                    break
+
+                llm_result = llm_result.model_copy(
+                    update={
+                        "revisedText": repaired_text,
+                        "changes": [*llm_result.changes, *repair.changes],
+                        "summary": _dedupe([*llm_result.summary, *repair.summary]),
+                    }
+                )
+                detection = repaired_detection
+
+            final_s1 = _severity_count(detection.findings, "S1")
+            if rounds_used and final_s1:
+                extra_warnings.append(
+                    f"스타일 게이트 수리 후에도 S1 잔존 신호가 {final_s1}건 감지됐습니다."
+                )
+
+            result: RewriteState = {
+                "llm_result": llm_result,
+                "warnings": _dedupe([*state.get("warnings", []), *extra_warnings]),
+                "round": state.get("round", 1) + rounds_used,
+                "style_gate_input_tokens": input_tokens,
+                "style_gate_output_tokens": output_tokens,
+            }
+        except Exception as exc:
+            self._stage_failed(state, "style_gate", stage_started_at, exc)
+            raise
+
+        self._stage_succeeded(
+            state,
+            "style_gate",
+            stage_started_at,
+            details={
+                "implementation": implementation,
+                "chunked": chunked,
+                "repair_rounds": rounds_used,
+                "initial_severity_score": initial_score,
+                "final_severity_score": detection.severityWeightedScore,
+                "residual_s1_count": final_s1,
+                "residual_s2_count": _severity_count(detection.findings, "S2"),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "warnings_count": len(extra_warnings),
             },
         )
         return result
@@ -531,54 +689,106 @@ def _rewrite_result_state(
     }
 
 
+_MAX_RULEBOOK_HINTS = 24
+_MAX_HINT_MATCHES = 3
+_MATCH_SNIPPET_MAX_CHARS = 40
+# Findings for these rules may legitimately overlap protected values (numbers,
+# quotes), so their spans never travel as match samples.
+_MATCH_EXEMPT_RULE_IDS = frozenset({"B-1", "C-9"})
+
+
 def _compact_rulebook_hints(findings: list[Finding]) -> list[RulebookHint]:
     severity_order = {"S1": 0, "S2": 1, "S3": 2}
     scope_order = {"span": 0, "document": 1}
-    sorted_findings = sorted(
-        findings,
-        key=lambda finding: (
-            severity_order.get(finding.severity, 9),
-            scope_order.get(finding.scope, 9),
-            finding.category,
-            finding.id,
-        ),
-    )
-    category_counts = Counter(finding.category for finding in findings)
-    hints: list[RulebookHint] = []
-    seen_categories: set[str] = set()
-    for finding in sorted_findings:
+    grouped: dict[str, list[Finding]] = {}
+    for finding in findings:
         if finding.severity not in {"S1", "S2"}:
             continue
-        # Keep the prompt compact and avoid raw source spans. Prefer category
-        # diversity first; occurrence counts convey repetition without spans.
-        if finding.category in seen_categories:
-            continue
-        hints.append(_rulebook_hint_from_finding(finding, category_counts[finding.category]))
-        seen_categories.add(finding.category)
-        if len(hints) >= 8:
-            return hints
+        grouped.setdefault(finding.category, []).append(finding)
 
-    for finding in sorted_findings:
-        if len(hints) >= 8:
+    for rule_findings in grouped.values():
+        rule_findings.sort(
+            key=lambda finding: (
+                severity_order.get(finding.severity, 9),
+                scope_order.get(finding.scope, 9),
+                finding.id,
+            )
+        )
+
+    def rule_sort_key(item: tuple[str, list[Finding]]) -> tuple[int, str]:
+        rule_id, rule_findings = item
+        return (severity_order.get(rule_findings[0].severity, 9), rule_id)
+
+    hints: list[RulebookHint] = []
+    for rule_id, rule_findings in sorted(grouped.items(), key=rule_sort_key):
+        first = rule_findings[0]
+        matches: list[str] = []
+        if rule_id not in _MATCH_EXEMPT_RULE_IDS:
+            for finding in rule_findings:
+                span = (finding.textSpan or "").strip()[:_MATCH_SNIPPET_MAX_CHARS]
+                if span and span not in matches:
+                    matches.append(span)
+                if len(matches) >= _MAX_HINT_MATCHES:
+                    break
+        hints.append(
+            RulebookHint(
+                id=first.id,
+                category=rule_id,
+                categoryLabel=first.categoryLabel,
+                severity=first.severity,
+                scope=first.scope,
+                suggestedFix=first.suggestedFix,
+                occurrences=len(rule_findings),
+                matches=matches,
+            )
+        )
+        if len(hints) >= _MAX_RULEBOOK_HINTS:
             break
-        if finding.severity not in {"S1", "S2"}:
-            continue
-        if any(hint.id == finding.id for hint in hints):
-            continue
-        hints.append(_rulebook_hint_from_finding(finding, category_counts[finding.category]))
     return hints
 
 
-def _rulebook_hint_from_finding(finding: Finding, occurrences: int = 1) -> RulebookHint:
-    return RulebookHint(
-        id=finding.id,
-        category=finding.category,
-        categoryLabel=finding.categoryLabel,
-        severity=finding.severity,
-        scope=finding.scope,
-        suggestedFix=finding.suggestedFix,
-        occurrences=max(1, occurrences),
-    )
+def _split_text_chunks(text: str, target_chars: int) -> list[str]:
+    parts = re.split(r"(\n\s*\n)", text)
+    segments: list[str] = []
+    for index in range(0, len(parts), 2):
+        paragraph = parts[index]
+        separator = parts[index + 1] if index + 1 < len(parts) else ""
+        if paragraph or separator:
+            segments.append(paragraph + separator)
+
+    chunks: list[str] = []
+    current = ""
+    for segment in segments:
+        if current and len(current) + len(segment) > target_chars:
+            chunks.append(current)
+            current = segment
+        else:
+            current += segment
+    if current:
+        chunks.append(current)
+    return chunks or [text]
+
+
+def _severity_count(findings: list[Finding], severity: str) -> int:
+    return sum(1 for finding in findings if finding.severity == severity)
+
+
+def _style_repair_regressions(
+    request: RewriteRequest,
+    draft_text: str,
+    repaired_text: str,
+) -> list[str]:
+    draft_completion = set(_completion_warnings(request, draft_text))
+    reasons = [
+        warning
+        for warning in _completion_warnings(request, repaired_text)
+        if warning not in draft_completion
+    ]
+    draft_flagged = _local_preservation_flagged_edits(request, draft_text)
+    repaired_flagged = _local_preservation_flagged_edits(request, repaired_text)
+    if len(repaired_flagged) > len(draft_flagged):
+        reasons.append("스타일 수리 출력에서 보존 대상 훼손이 초안보다 늘었습니다.")
+    return _dedupe(reasons)
 
 
 def _audit_status(local_warnings: list[str], model_status: str, flagged_edits: list[FlaggedEdit]) -> str:
@@ -879,6 +1089,7 @@ def _sum_input_tokens(state: RewriteState) -> int:
     rewrite_result = state.get("rewrite_result") or state.get("llm_result")
     return (
         _token_value(rewrite_result, "inputTokens")
+        + int(state.get("style_gate_input_tokens") or 0)
         + _token_value(state.get("audit_result"), "inputTokens")
         + _token_value(state.get("review_result"), "inputTokens")
     )
@@ -888,6 +1099,7 @@ def _sum_output_tokens(state: RewriteState) -> int:
     rewrite_result = state.get("rewrite_result") or state.get("llm_result")
     return (
         _token_value(rewrite_result, "outputTokens")
+        + int(state.get("style_gate_output_tokens") or 0)
         + _token_value(state.get("audit_result"), "outputTokens")
         + _token_value(state.get("review_result"), "outputTokens")
     )

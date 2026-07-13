@@ -127,6 +127,10 @@ class RulebookHint(BaseModel):
     scope: FindingScope
     suggestedFix: str
     occurrences: int = 1
+    # Short sample expressions matched in the source. Never populated from
+    # spans that overlap protected values; kept out of logs by count-only
+    # stage details.
+    matches: list[str] = Field(default_factory=list)
 
 
 class HumanizeContext(BaseModel):

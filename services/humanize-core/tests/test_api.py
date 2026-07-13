@@ -723,8 +723,13 @@ def test_rewrite_prompt_embeds_active_rules_without_detect_stage():
     system_prompt = prompts.rewrite_system_prompt()
     assert "A-1" in system_prompt
     assert "의미 불변" in system_prompt
-    assert "데이터를 분석해 인사이트를 얻는다" in system_prompt
     assert "최종 자체 검토 체크리스트" in system_prompt
+    # The system prompt now carries the compact rulebook: rule headings stay as
+    # an index, while per-rule bodies travel as rule cards attached to hints.
+    assert "## A-2." in system_prompt
+    assert "데이터를 분석해 인사이트를 얻는다" not in system_prompt
+    assert "데이터를 분석해 인사이트를 얻는다" in resources.rule_card("A-2")
+    assert len(system_prompt) < len(resources.strict_rules())
     assert not hasattr(resources, "ai_tell_taxonomy")
     assert hasattr(resources, "strict_rules")
 
@@ -943,14 +948,25 @@ async def test_prepare_context_contains_compact_rulebook_hints():
     assert context["detectedCount"] >= 2
     assert context["severityWeightedScore"] > 0
     assert context["categorySummary"]["A"] >= 2
-    assert len(context["rulebookHints"]) <= 8
+    assert len(context["rulebookHints"]) <= 24
     assert {hint["category"] for hint in context["rulebookHints"]} >= {"A-2", "A-7"}
     for hint in context["rulebookHints"]:
-        assert set(hint) == {"id", "category", "categoryLabel", "severity", "scope", "suggestedFix", "occurrences"}
+        assert set(hint) == {
+            "id",
+            "category",
+            "categoryLabel",
+            "severity",
+            "scope",
+            "suggestedFix",
+            "occurrences",
+            "matches",
+        }
         assert hint["occurrences"] >= 1
         assert "textSpan" not in hint
         assert "start" not in hint
         assert "end" not in hint
+    hints_by_rule = {hint["category"]: hint for hint in context["rulebookHints"]}
+    assert any("통해" in match for match in hints_by_rule["A-2"]["matches"])
 
 
 async def test_prepare_context_does_not_leak_protected_term_spans():
@@ -2254,3 +2270,209 @@ def test_metrics_v2_computes_im_not_ai_signal_keys():
     assert "v2_metrics" in metrics
     assert "normalisation_score" in metrics["v2_metrics"]
     assert "v2_interference_index" in metrics
+
+
+def test_compact_system_prompt_keeps_rule_index_without_bodies():
+    compact = resources.compact_strict_rules()
+    full = resources.strict_rules()
+
+    assert len(compact) < len(full) * 0.5
+    for rule_id in ("A-1", "A-19", "D-4", "I-1", "J-3"):
+        assert f"## {rule_id}." in compact
+        card = resources.rule_card(rule_id)
+        assert card.startswith(f"## {rule_id}.")
+    assert "의미 불변" in compact
+    assert "최종 자체 검토 체크리스트" in compact
+    assert "데이터를 분석해 인사이트를 얻는다" not in compact
+    assert resources.rule_card("Z-99") == ""
+
+
+def test_rewrite_priorities_attach_rule_cards_and_match_samples():
+    request = RewriteRequestForTest.model_validate(
+        _payload(text="결과를 통해 성과를 만들고 목적을 가지고 있습니다.")
+    )
+    context = _rulebook_context()
+    context["rulebookHints"][0]["matches"] = ["성과를 통해"]
+
+    payload = json.loads(prompts.rewrite_user_prompt(request, context))
+    hints = payload["rewrite_priorities"]["rulebook_hints"]
+
+    assert hints[0]["category"] == "A-2"
+    assert hints[0]["matches"] == ["성과를 통해"]
+    assert hints[0]["ruleCard"].startswith("## A-2.")
+    assert "데이터를 분석해 인사이트를 얻는다" in hints[0]["ruleCard"]
+    assert hints[1]["matches"] == []
+    assert hints[1]["ruleCard"].startswith("## A-7.")
+
+
+def test_split_text_chunks_reassembles_source_exactly():
+    from humanize_core.graph import _split_text_chunks
+
+    text = "첫 문단입니다.\n\n둘째 문단입니다.\n\n\n셋째 문단입니다.\n마지막 줄입니다.\n"
+    chunks = _split_text_chunks(text, 12)
+
+    assert len(chunks) >= 2
+    assert "".join(chunks) == text
+
+
+async def test_chunked_rewrite_splits_long_text_and_reassembles():
+    chunk_texts = []
+
+    class ChunkCapturingLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            chunk_texts.append(request.text)
+            assert "rulebookHints" in context
+            return RewriteResult(
+                revisedText=request.text,
+                changes=[
+                    Change(
+                        original="",
+                        revised="",
+                        reason="유지했습니다.",
+                        type="clarity",
+                        riskLevel="low",
+                    )
+                ],
+                summary=["유지했습니다."],
+            )
+
+    paragraph = "오늘 회의에서 다음 분기 일정을 정리했습니다. 팀별 준비 상황도 함께 점검했습니다."
+    text = "\n\n".join(paragraph for _ in range(40))
+    request = RewriteRequestForTest.model_validate(
+        _payload(text=text, protected_terms=[])
+    )
+
+    settings = _settings()
+    assert len(text) >= settings.chunk_min_chars
+    response = await RewriteGraphRunner(settings, ChunkCapturingLLM()).run(request)
+
+    assert len(chunk_texts) >= 2
+    assert all(len(chunk) <= settings.chunk_target_chars + len(paragraph) for chunk in chunk_texts)
+    assert response.revisedText == text
+    assert response.usage.rounds == 1
+
+
+async def test_style_gate_repairs_residual_s1_findings():
+    calls = []
+    captured = {}
+
+    class GatedLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            calls.append("rewrite")
+            return RewriteResult(
+                revisedText="이 제품은 강한 경쟁력을 가지고 있다.",
+                changes=[],
+                summary=["초안입니다."],
+            )
+
+        async def style_repair(self, request, draft_text, residual_hints, smooth_transitions):
+            calls.append("style_repair")
+            captured["hints"] = residual_hints
+            captured["smooth"] = smooth_transitions
+            return RewriteResult(
+                revisedText="이 제품은 경쟁력이 강하다.",
+                changes=[],
+                summary=["잔존 룰 위반을 수리했습니다."],
+            )
+
+        async def audit(self, request, context, revised_text, changes):
+            calls.append("audit")
+            captured["audited_text"] = revised_text
+            return AuditResult(status="full_pass", reason="통과")
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(text="이 제품은 강한 경쟁력을 가지고 있다.", protected_terms=[])
+    )
+
+    response = await RewriteGraphRunner(_settings(), GatedLLM()).run(request)
+
+    assert calls == ["rewrite", "style_repair", "audit"]
+    assert captured["smooth"] is False
+    hint_categories = {hint["category"] for hint in captured["hints"]}
+    assert "A-7" in hint_categories
+    a7_hint = next(hint for hint in captured["hints"] if hint["category"] == "A-7")
+    assert any("가지고 있" in match for match in a7_hint["matches"])
+    assert captured["audited_text"] == "이 제품은 경쟁력이 강하다."
+    assert response.revisedText == "이 제품은 경쟁력이 강하다."
+    assert response.usage.rounds == 2
+
+
+async def test_style_gate_discards_repair_that_regresses_style_score():
+    calls = []
+
+    class RegressingLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            calls.append("rewrite")
+            return RewriteResult(
+                revisedText="이 팀은 좋은 문화를 가지고 있다.",
+                changes=[],
+                summary=["초안입니다."],
+            )
+
+        async def style_repair(self, request, draft_text, residual_hints, smooth_transitions):
+            calls.append("style_repair")
+            return RewriteResult(
+                revisedText="이 팀은 좋은 문화를 가지고 있다. 그것은 계속 되어진다.",
+                changes=[],
+                summary=["수리 실패 후보입니다."],
+            )
+
+        async def audit(self, request, context, revised_text, changes):
+            calls.append("audit")
+            return AuditResult(status="full_pass", reason="통과")
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(text="이 팀은 좋은 문화를 가지고 있다.", protected_terms=[])
+    )
+
+    response = await RewriteGraphRunner(_settings(), RegressingLLM()).run(request)
+
+    assert calls == ["rewrite", "style_repair", "audit"]
+    assert response.revisedText == "이 팀은 좋은 문화를 가지고 있다."
+    assert any("S1 잔존" in warning for warning in response.warnings)
+
+
+async def test_chunked_rewrite_requests_transition_smoothing_once():
+    captured_flags = []
+
+    class TransitionLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            return RewriteResult(
+                revisedText=request.text,
+                changes=[],
+                summary=["유지했습니다."],
+            )
+
+        async def style_repair(self, request, draft_text, residual_hints, smooth_transitions):
+            captured_flags.append(smooth_transitions)
+            return RewriteResult(
+                revisedText=draft_text,
+                changes=[],
+                summary=["문단 연결을 점검했습니다."],
+            )
+
+        async def audit(self, request, context, revised_text, changes):
+            return AuditResult(status="full_pass", reason="통과")
+
+    paragraph = "오늘 회의에서 다음 분기 일정을 정리했습니다. 팀별 준비 상황도 함께 점검했습니다."
+    text = "\n\n".join(paragraph for _ in range(40))
+    request = RewriteRequestForTest.model_validate(
+        _payload(text=text, protected_terms=[])
+    )
+
+    response = await RewriteGraphRunner(_settings(), TransitionLLM()).run(request)
+
+    assert captured_flags == [True]
+    assert response.revisedText == text
