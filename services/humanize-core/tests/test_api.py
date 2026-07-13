@@ -307,35 +307,39 @@ def test_stub_rewrite_reflects_user_selected_controls():
     assert "형식을 보존" in data["summary"][0]
 
 
-async def test_long_compat_request_uses_single_rewrite_path():
+async def test_long_compat_request_is_chunked_at_sentence_boundaries():
     text = "보고 문장입니다. " * 500
     request = RewriteRequestForTest.model_validate(_payload(text=text, rewrite_mode="fast", max_rounds=3))
 
     class CapturingRewriteLLM:
         def __init__(self) -> None:
-            self.rewrite_calls = 0
+            self.chunk_lengths: list[int] = []
 
         async def rewrite_once(self, request, context):
-            self.rewrite_calls += 1
+            self.chunk_lengths.append(len(request.text))
             return RewriteResult(
                 revisedText=request.text,
                 changes=[
                     Change(
                         original="보고 문장입니다.",
                         revised="보고 문장입니다.",
-                        reason="긴 호환 요청도 단일 rewrite 루틴으로 처리합니다.",
+                        reason="청크 단위로 처리합니다.",
                         type="clarity",
                         riskLevel="low",
                     )
                 ],
-                summary=["단일 rewrite 루틴을 사용했습니다."],
+                summary=["청크 단위 rewrite를 사용했습니다."],
             )
 
     llm = CapturingRewriteLLM()
-    response = await RewriteGraphRunner(_settings(), llm).run(request)
+    settings = _settings()
+    response = await RewriteGraphRunner(settings, llm).run(request)
 
     assert 4_000 < len(text) <= 5_000
-    assert llm.rewrite_calls == 1
+    # 4,500자, 문단 구분 없는 글도 문장 경계 기준 약 1,000자 청크로 나뉜다.
+    assert len(llm.chunk_lengths) == 5
+    assert all(length <= settings.chunk_target_chars for length in llm.chunk_lengths)
+    assert response.revisedText == text
     assert response.usage.rounds == 1
     assert not response.warnings
 
@@ -2313,6 +2317,28 @@ def test_split_text_chunks_reassembles_source_exactly():
 
     assert len(chunks) >= 2
     assert "".join(chunks) == text
+
+
+def test_split_text_chunks_cuts_only_at_sentence_ends_without_paragraph_breaks():
+    from humanize_core.graph import _split_text_chunks
+
+    sentence = "이번 분기에는 고객 문의 응답 시간을 줄이기 위한 개선 작업을 진행했습니다. "
+    text = (sentence * 70).rstrip()
+    chunks = _split_text_chunks(text, 1000)
+
+    assert len(chunks) >= 3
+    assert "".join(chunks) == text
+    for chunk in chunks[:-1]:
+        assert len(chunk) >= 1000
+        assert chunk.rstrip().endswith("습니다.")
+
+
+def test_split_sentence_spans_ignores_decimal_points():
+    from humanize_core.graph import _split_sentence_spans
+
+    spans = _split_sentence_spans("3분기 매출은 42.7억 원으로 집계됐다. 목표는 50억 원이다.")
+
+    assert spans == ["3분기 매출은 42.7억 원으로 집계됐다. ", "목표는 50억 원이다."]
 
 
 async def test_chunked_rewrite_splits_long_text_and_reassembles():

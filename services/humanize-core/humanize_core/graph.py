@@ -748,23 +748,39 @@ def _compact_rulebook_hints(findings: list[Finding]) -> list[RulebookHint]:
     return hints
 
 
-def _split_text_chunks(text: str, target_chars: int) -> list[str]:
-    parts = re.split(r"(\n\s*\n)", text)
-    segments: list[str] = []
-    for index in range(0, len(parts), 2):
-        paragraph = parts[index]
-        separator = parts[index + 1] if index + 1 < len(parts) else ""
-        if paragraph or separator:
-            segments.append(paragraph + separator)
+# A sentence ends at terminator punctuation followed by whitespace/end-of-text,
+# or at a bare newline. The whitespace guard keeps decimals ("42.7억") and
+# inline abbreviations from being treated as boundaries.
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?。！？]+(?=\s|$)|\n")
 
+
+def _split_sentence_spans(text: str) -> list[str]:
+    spans: list[str] = []
+    start = 0
+    for match in _SENTENCE_BOUNDARY_RE.finditer(text):
+        if match.end() <= start:
+            continue
+        end = match.end()
+        while end < len(text) and text[end].isspace():
+            end += 1
+        spans.append(text[start:end])
+        start = end
+    if start < len(text):
+        spans.append(text[start:])
+    return spans
+
+
+def _split_text_chunks(text: str, target_chars: int) -> list[str]:
+    # Cut only at sentence ends: a chunk closes at the end of the sentence in
+    # progress when the running length reaches target_chars, so no sentence is
+    # ever split across chunks.
     chunks: list[str] = []
     current = ""
-    for segment in segments:
-        if current and len(current) + len(segment) > target_chars:
+    for span in _split_sentence_spans(text):
+        current += span
+        if len(current) >= target_chars:
             chunks.append(current)
-            current = segment
-        else:
-            current += segment
+            current = ""
     if current:
         chunks.append(current)
     return chunks or [text]
