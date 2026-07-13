@@ -137,6 +137,43 @@ The OpenRouter provider uses Chat Completions with `response_format:
 json_schema` for rewrite, audit, and review. It sets provider routing to require
 models that support the requested structured-output parameters.
 
+## Golden-Set Eval
+
+`evals/golden_set.json` holds 32 fixed Korean inputs grouped by failure type
+(번역투, AI 관용구, 수치·인용 보존, 격식/해요체, 긴 글, 엣지 케이스).
+`scripts/eval_golden.py` runs each case through the full graph and scores the
+output with the detectors already in the codebase: residual S1/S2 patterns
+(`local_detect` on the output), change rate, over-polish signals, preservation
+damage, and completion warnings.
+
+```bash
+# full run against the configured provider (.env), saves a JSON report
+.venv/bin/python scripts/eval_golden.py
+
+# compare against a previous report to catch regressions after prompt changes
+.venv/bin/python scripts/eval_golden.py --baseline evals/reports/report-<ts>.json
+
+# subset / offline harness check
+.venv/bin/python scripts/eval_golden.py --tag 번역투
+.venv/bin/python scripts/eval_golden.py --stub
+```
+
+On the server (where `.env` lives) run it through Compose. The one-off
+container reuses the service's `env_file`; mount the reports dir so results
+survive the container:
+
+```bash
+docker compose build humanize-core
+docker compose run --rm \
+  -v "$PWD/evals/reports:/app/evals/reports" \
+  humanize-core python scripts/eval_golden.py
+```
+
+Run it once before a prompt/rulebook change and once after, then compare with
+`--baseline`. A drop in residual S1 with unchanged preservation failures means
+the change is safe to keep. Do not edit existing case texts (ids stay
+comparable across reports); add new cases instead.
+
 ## Async Debug Logs
 
 Strict async jobs write operational logs to daily text files:

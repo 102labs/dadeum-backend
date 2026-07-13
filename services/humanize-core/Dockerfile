@@ -8,6 +8,7 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY humanize_core ./humanize_core
 COPY scripts ./scripts
+COPY evals ./evals
 
 RUN pip install --no-cache-dir .
 
