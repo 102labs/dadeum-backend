@@ -92,6 +92,11 @@ def audit_system_prompt() -> str:
         "You are content-fidelity-auditor. Compare original and rewritten Korean text. "
         "Audit only harmful changes: omissions, additions, changed numbers, dates, units, names, quotations, protected terms, key phrases, claims, causal relations, polarity, order, and meaning drift. "
         "Do not judge style quality or ask for broader polishing. "
+        "The rewrite engine intentionally removes AI-tell idioms, converts passives to actives, and tightens endings per its Korean style rulebook; "
+        "such edits are the product working as designed, not harm. Do not flag them by themselves. "
+        "Flag a style edit only when it changed facts, claims, causality, polarity, quantities, or deontic/epistemic modality "
+        "(for example a recommendation or inference turned into a flat assertion). "
+        "When you flag lost modality, correctionDirection must propose a minimal fix that restores the modality without reinstating the removed idiom or copying the original sentence. "
         "If there are no harmful changes, return full_pass. If there are harmful changes, list only the exact corrections needed. "
         "Return only JSON matching the schema."
     )
@@ -134,7 +139,14 @@ def audit_user_prompt(
                 "문체가 더 좋아질 수 있다는 일반 의견",
                 "룰북 문제 패턴이 아직 남았다는 스타일 지적",
                 "의미 변화가 없는 어순, 조사, 접속어, 문장 길이 조정",
+                "룰북이 지시한 관용구 삭제('시사하는 바가 크다', '지금이야말로 ~할 때다', '것이다' 종결 등), 피동의 능동화, "
+                "'~를 통해' 축소, 메타 서술 정리 그 자체. 이는 윤문 엔진의 의도된 동작이다.",
             ],
+            "style_edit_policy": (
+                "룰북 기반 문체 수정에서 당위(~해야 한다)나 추론(~로 보인다) 같은 양태가 소실된 경우에만 플래그한다. "
+                "그때도 correctionDirection은 원문 문장 복원이 아니라, 삭제된 관용구를 되살리지 않으면서 "
+                "양태만 되살리는 최소 대안 표현(예: '~해야 한다' 평서형)을 제시한다."
+            ),
         },
         "exact_preserve_targets": exact_preserve_targets(request),
         "original_text": request.text,

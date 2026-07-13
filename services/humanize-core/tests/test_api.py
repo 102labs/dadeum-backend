@@ -2559,3 +2559,61 @@ async def test_review_that_reverts_draft_wholesale_falls_back_to_local_repair():
     assert "성과로 결과를 확인했다" in response.revisedText
     assert response.revisedText != original
     assert any("원문으로 되돌아갔" in warning for warning in response.warnings)
+
+
+async def test_local_repair_skips_style_restore_that_reintroduces_s1():
+    original = (
+        "이번 조사 결과는 시사하는 바가 크다. "
+        "후속 대응은 개선이 필요할 것으로 판단된다. 응답률은 62%였다."
+    )
+    draft = (
+        "이번 조사 결과는 후속 논의가 필요한 지점을 보여준다. "
+        "후속 대응은 손봐야 한다. 응답률은 62%였다."
+    )
+
+    class NoReviewLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            return RewriteResult(revisedText=draft, changes=[], summary=["초안입니다."])
+
+        async def audit(self, request, context, revised_text, changes):
+            return AuditResult(
+                status="conditional_pass",
+                reason="문체 수정 검토가 필요합니다.",
+                flaggedEdits=[
+                    {
+                        # Restoring this would reintroduce the D-2 S1 idiom.
+                        "before": "이번 조사 결과는 시사하는 바가 크다.",
+                        "after": "이번 조사 결과는 후속 논의가 필요한 지점을 보여준다.",
+                        "issue": "메타 서술이 제거됐습니다.",
+                        "checklistFailed": [7],
+                        "action": "rewrite_required",
+                        "correctionDirection": "원문 서술을 복원합니다.",
+                        "severity": "high",
+                    },
+                    {
+                        # S1-free hedge restore must still apply.
+                        "before": "개선이 필요할 것으로 판단된다",
+                        "after": "손봐야 한다",
+                        "issue": "추론 양태가 단정으로 바뀌었습니다.",
+                        "checklistFailed": [6],
+                        "action": "rewrite_required",
+                        "correctionDirection": "추론 양태를 복원합니다.",
+                        "severity": "high",
+                    },
+                ],
+            )
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(text=original, protected_terms=[])
+    )
+
+    response = await RewriteGraphRunner(_settings(), NoReviewLLM()).run(request)
+
+    # The D-2 idiom stays fixed; the modality hedge is restored.
+    assert "시사하는 바가 크다" not in response.revisedText
+    assert "후속 논의가 필요한 지점을 보여준다" in response.revisedText
+    assert "개선이 필요할 것으로 판단된다" in response.revisedText
+    assert any("게이트 수리 결과를 유지" in warning for warning in response.warnings)

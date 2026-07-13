@@ -899,7 +899,7 @@ def _local_repair_review(
     repair_edits = [edit for edit in audit_result.flaggedEdits if edit.action != "warning"]
     corrections = [edit.correctionDirection or edit.issue for edit in repair_edits]
     if corrections:
-        repaired_text, applied, unresolved = _apply_local_audit_repairs(
+        repaired_text, applied, unresolved, style_kept = _apply_local_audit_repairs(
             request,
             llm_result.revisedText,
             repair_edits,
@@ -910,6 +910,11 @@ def _local_repair_review(
             warnings.append(
                 "감사 지적 중 로컬 자동 복원이 어려운 항목이 있습니다: "
                 + "; ".join(unresolved[:3])
+            )
+        if style_kept:
+            warnings.append(
+                f"원문 복원 시 룰북 S1 위반이 되살아나는 스타일 지적 {len(style_kept)}건은 "
+                "게이트 수리 결과를 유지했습니다."
             )
         return StrictReviewResult(
             revisedText=repaired_text,
@@ -942,12 +947,16 @@ def _apply_local_audit_repairs(
     request: RewriteRequest,
     revised_text: str,
     flagged_edits: list[FlaggedEdit],
-) -> tuple[str, list[str], list[str]]:
+) -> tuple[str, list[str], list[str], list[str]]:
     repaired = revised_text
     applied: list[str] = []
     unresolved: list[str] = []
+    style_kept: list[str] = []
     for edit in flagged_edits:
         label = edit.correctionDirection or edit.issue
+        if _restoring_reintroduces_s1(edit):
+            style_kept.append(label)
+            continue
         if _local_repair_satisfies_edit(request, repaired, edit):
             applied.append(label)
             continue
@@ -965,7 +974,22 @@ def _apply_local_audit_repairs(
             applied.append(label)
         else:
             unresolved.append(label)
-    return repaired, _dedupe(applied), _dedupe(unresolved)
+    return repaired, _dedupe(applied), _dedupe(unresolved), _dedupe(style_kept)
+
+
+# Value preservation (numbers, names, quotes) always wins, but a style-only
+# restore whose original wording itself violates an S1 rule would undo the
+# style gate's work. Keep the gated draft for those and surface a warning
+# instead of silently reintroducing the violation.
+_VALUE_PRESERVING_ACTIONS = frozenset({"restore_original", "preserve_exact", "rollback_required"})
+
+
+def _restoring_reintroduces_s1(edit: FlaggedEdit) -> bool:
+    if edit.action in _VALUE_PRESERVING_ACTIONS:
+        return False
+    if not edit.before:
+        return False
+    return any(finding.severity == "S1" for finding in local_detect(edit.before).findings)
 
 
 def _local_repair_satisfies_edit(
