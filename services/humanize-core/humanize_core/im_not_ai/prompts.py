@@ -342,6 +342,8 @@ def style_repair_system_prompt() -> str:
         "You receive a draft rewrite plus rulebook violations that a deterministic pattern gate still detects in the draft. "
         "Fix only the listed violations, and smooth paragraph-boundary connectors only when transition_policy asks for it. "
         "Never change facts, numbers, dates, names, quotations, URLs, code, protected terms, claims, or meaning. "
+        "Preserve the modality of genuine inference, recommendation, and uncertainty: remove only empty habitual hedging, "
+        "and never turn an uncertain claim into an assertion. "
         "Keep every sentence without a listed violation as close to the draft as possible. "
         "Return the complete repaired passage in revisedText; excerpts, summaries, or continuations are failures. "
         "Do not expose hidden reasoning. Return only JSON matching the schema."
@@ -360,8 +362,12 @@ def style_repair_user_prompt(
         "repair_contract": [
             "residual_rule_hints에 나열된 위반만 고친다. 나열되지 않은 문장은 초안 그대로 유지한다.",
             "각 후보의 ruleCard 수정 방안을 따르되, 보존 예외에 해당하면 그대로 둔다.",
+            "완곡·권고 계열(G-1, G-2, I-4, D-6 등) 수리에서는 실제 추론·권고·불확실성의 양태를 유지하고, "
+            "내용 없는 습관성 완곡만 제거한다. 확신 근거가 없는 주장을 단정형으로 바꾸지 않는다. "
+            "예: '~기 때문인 것으로 보인다'는 추론이므로 '~영향이다' 같은 단정으로 바꾸지 않는다.",
             "revisedText에는 수리된 완성본 전체를 넣는다. 발췌, 요약, 이어쓰기는 실패다.",
             "의미, 수치, 날짜, 고유명사, 직접 인용, protected term은 바꾸지 않는다.",
+            "수리하지 않는 단어와 문장은 draft_text와 글자 단위로 동일하게 유지한다. 새 오타나 용어 변형을 만들지 않는다.",
             "changes에는 실제 수리한 로컬 변경만 기록한다.",
         ],
         "residual_rule_hints": [

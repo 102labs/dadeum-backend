@@ -2476,3 +2476,60 @@ async def test_chunked_rewrite_requests_transition_smoothing_once():
 
     assert captured_flags == [True]
     assert response.revisedText == text
+
+
+async def test_review_that_reverts_draft_wholesale_falls_back_to_local_repair():
+    original = "이 지표는 개선이 필요할 것으로 판단된다. 성과를 통해 결과를 확인했다."
+    draft = "이 지표는 개선해야 한다. 성과로 결과를 확인했다."
+    calls = []
+
+    class RevertingReviewLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            calls.append("rewrite")
+            return RewriteResult(revisedText=draft, changes=[], summary=["초안입니다."])
+
+        async def audit(self, request, context, revised_text, changes):
+            calls.append("audit")
+            return AuditResult(
+                status="conditional_pass",
+                reason="완곡 양태가 단정으로 바뀌었습니다.",
+                flaggedEdits=[
+                    {
+                        "before": "개선이 필요할 것으로 판단된다",
+                        "after": "개선해야 한다",
+                        "issue": "추론 표현이 단정형으로 변경돼 주장 강도가 상승했습니다.",
+                        "checklistFailed": [6],
+                        "action": "rewrite_required",
+                        "correctionDirection": "원문의 추론 양태를 복원합니다.",
+                        "severity": "high",
+                    }
+                ],
+            )
+
+        async def review(self, request, context, revised_text, audit_result):
+            calls.append("review")
+            # Buggy behavior under test: rebase on the original instead of the
+            # draft, discarding every safe style improvement.
+            return StrictReviewResult(
+                revisedText=request.text,
+                changes=[],
+                summary=["원문 기준으로 복원했습니다."],
+                finalAuditStatus="full_pass",
+            )
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(text=original, protected_terms=[])
+    )
+
+    response = await RewriteGraphRunner(_settings(), RevertingReviewLLM()).run(request)
+
+    assert calls == ["rewrite", "audit", "review"]
+    # The flagged hedge is restored, but the safe fix ("성과로") survives
+    # instead of the whole draft being thrown away.
+    assert "개선이 필요할 것으로 판단된다" in response.revisedText
+    assert "성과로 결과를 확인했다" in response.revisedText
+    assert response.revisedText != original
+    assert any("원문으로 되돌아갔" in warning for warning in response.warnings)

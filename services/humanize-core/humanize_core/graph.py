@@ -10,6 +10,7 @@ from humanize_core.config import Settings
 from humanize_core.debug_log import RewriteDebugLogger
 from humanize_core.diff import build_display_safe_changes
 from humanize_core.im_not_ai.audit import (
+    change_rate,
     local_detect,
     mark_high_risk_if_needed,
     split_sentences,
@@ -985,6 +986,14 @@ def _clean_repaired_text(text: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
+# Review must repair only flagged spots, never abandon the draft. A draft
+# that meaningfully differed from the source but comes back nearly identical
+# to the source means the model rebased on original_text instead of the
+# draft, discarding every safe style improvement along the way.
+_REVIEW_REVERT_DRAFT_MIN_CHANGE_RATE = 5.0
+_REVIEW_REVERT_MAX_CHANGE_RATE = 1.0
+
+
 def _review_output_regressions(
     request: RewriteRequest,
     draft_text: str,
@@ -1003,6 +1012,14 @@ def _review_output_regressions(
     review_flagged = _local_preservation_flagged_edits(request, review_text)
     if len(review_flagged) > len(draft_flagged):
         reasons.append("Review 출력에서 보존 대상 훼손이 초안보다 늘었습니다.")
+    if (
+        not draft_completion  # a broken draft may legitimately be rebuilt from the source
+        and change_rate(request.text, draft_text) >= _REVIEW_REVERT_DRAFT_MIN_CHANGE_RATE
+        and change_rate(request.text, review_text) <= _REVIEW_REVERT_MAX_CHANGE_RATE
+    ):
+        reasons.append(
+            "Review 출력이 감사 지적 반영 대신 초안 수정 내용을 버리고 원문으로 되돌아갔습니다."
+        )
     return _dedupe(reasons)
 
 
