@@ -26,12 +26,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
+# packages already ships every file under humanize_core/ (md/json resources
+# included). Do not force-include them again: recent hatchling versions fail
+# the build on duplicate archive paths.
 packages = ["humanize_core"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"humanize_core/im_not_ai/resources" = "humanize_core/im_not_ai/resources"
-"humanize_core/im_not_ai/baseline.json" = "humanize_core/im_not_ai/baseline.json"
-"humanize_core/im_not_ai/baseline_v2_diff.json" = "humanize_core/im_not_ai/baseline_v2_diff.json"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
