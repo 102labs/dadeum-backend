@@ -609,6 +609,7 @@ def test_prompts_pass_user_selected_rewrite_controls():
         "mode_policy": "single_active_rewrite_with_preservation_audit",
         "tone": "friendly",
         "preserve_formatting": True,
+        "source_register": "해요체(~해요/~예요)",
     }
     assert "우선 반영" in payload["rewrite_guidance"]["user_intent"]
     assert "자연스럽고 부드러운 업무 문체" in payload["rewrite_guidance"]["tone"]
@@ -643,9 +644,27 @@ def test_rewrite_prompt_runs_active_rulebook_single_pass():
     assert "findings" not in payload
     assert "rewrite_strategy" in payload
     assert payload["rewrite_pass"] == "active_rulebook_single_pass"
-    assert "must_edit_policy" in payload
-    assert any("원문을 그대로 반환하는 것은 rewrite 실패" in item for item in payload["must_edit_policy"])
-    assert any("최소 하나 이상의 안전한 표현 개선" in item for item in payload["must_edit_policy"])
+    assert "must_edit_policy" not in payload
+    assert "edit_policy" in payload
+    assert any("글자 그대로 둔다" in item for item in payload["edit_policy"])
+    assert any("동의어 교체 금지" in item for item in payload["edit_policy"])
+    assert any("양태 유지" in item for item in payload["edit_policy"])
+    assert any("높임 등급 유지" in item for item in payload["edit_policy"])
+    formal_payload = json.loads(
+        prompts.rewrite_user_prompt(
+            RewriteRequestForTest.model_validate(_payload(text="일정 좀 정리해서 공유할게요.", tone="formal")),
+            {},
+        )
+    )
+    assert any("tone=formal이므로" in item and "합쇼체" in item for item in formal_payload["edit_policy"])
+    assert not any("높임 등급 유지" in item for item in formal_payload["edit_policy"])
+    assert "양태는 그대로 둔다" in formal_payload["rewrite_guidance"]["tone"]
+    assert not any("최소 하나는 더 자연스럽고 간결하게 바뀌어야" in item for item in payload["edit_policy"])
+    assert any(item.startswith("하지 말 것:") for item in payload["edit_examples"])
+    assert "스킬들을" not in rendered_payload
+    assert "좋은 한국어 업무 문장의 기준" in system_prompt
+    assert "Never use preservation as a reason" not in system_prompt
+    assert "over-editing" in system_prompt
     assert "completion_contract" in payload
     assert "structured_output_contract" in payload
     assert "im_not_ai_quick_rules" not in payload
@@ -1070,12 +1089,15 @@ def test_local_style_rules_cover_legacy_source_rule_ids():
         "A-9",
         "A-10",
         "A-11",
+        "A-12",
+        "A-14",
         "A-15",
         "A-16",
         "A-18",
         "A-19",
         "B-1",
         "B-2",
+        "C-1",
         "C-5",
         "C-7",
         "C-8",
@@ -1092,18 +1114,21 @@ def test_local_style_rules_cover_legacy_source_rule_ids():
         "E-1",
         "E-2",
         "E-7",
+        "F-1",
         "F-4",
         "F-5",
         "G-1",
         "G-2",
         "G-3",
         "H-1",
+        "H-2",
         "H-3",
         "H-4",
         "I-1",
         "I-2",
         "I-3",
         "I-4",
+        "I-5",
         "J-1",
         "J-2",
         "J-3",
@@ -2930,3 +2955,67 @@ def test_display_changes_diff_whole_words_not_characters():
     assert "일이지만" not in changes[1].original
     for change in changes:
         assert change.original in original and change.revised in revised
+
+
+def test_detector_density_rules_ignore_single_ordinary_uses():
+    from humanize_core.im_not_ai.audit import detect_register
+
+    single = "신규 대시보드를 도입하면 업무 효율을 높일 수 있습니다. 자동화 도구로 관리되며, 모니터링은 정상 동작했지만 대응이 늦었습니다."
+    categories = {finding.category for finding in local_detect(single).findings}
+    # One "할 수 있", one "자동화", one comma after "지만", one "~고 있다"-free text: all ordinary.
+    assert "A-10" not in categories
+    assert "F-4" not in categories
+    assert "C-11" not in categories
+    assert "E-2" not in categories
+    assert "A-18" not in categories
+
+    dense = "효율을 높일 수 있습니다. 시간을 줄일 수 있고 오류도 발견할 수 있습니다. 지표를 확인할 수 있으며 댓글도 사용할 수 있습니다."
+    dense_categories = {finding.category for finding in local_detect(dense).findings}
+    assert "A-10" in dense_categories
+
+    commas = "검토했지만, 보류했고, 다시 논의하며, 확정했다."
+    assert {f.severity for f in local_detect(commas, focus_categories=["C-11"]).findings} == {"S2"}
+
+    stacked = (
+        "사고를 일으킨 화학물질을 생산한 회사에서 일했던 남자를 만났다. "
+        "그가 소개한 회사에서 근무했던 동료를 다시 만났다."
+    )
+    assert "A-18" in {f.category for f in local_detect(stacked, focus_categories=["A-18"]).findings}
+
+    assert detect_register("회의를 엽니다. 자료를 보내 주세요. 기한을 지켜 주시기 바랍니다.") == "formal"
+    assert detect_register("일정 공유드립니다. 수요일에 반영된다. 목요일에 배포해요. 당번이 맡는다.") == "mixed"
+
+
+def test_detector_formal_register_streak_is_not_rhythm_violation():
+    formal = "회의를 엽니다. 자료를 보냅니다. 기한을 지킵니다. 결과를 공유합니다. 질문을 받습니다."
+    assert "E-2" not in {f.category for f in local_detect(formal, focus_categories=["E-2"]).findings}
+    plain = "지표를 분석했다. 사용률은 12%였다. 둘째 주에 올랐다. 셋째 주에도 올랐다."
+    assert "E-2" in {f.category for f in local_detect(plain, focus_categories=["E-2"]).findings}
+
+
+def test_detector_covers_previously_unmatched_rules():
+    cases = [
+        ("C-1", "첫째, 승인 단계를 줄인다. 둘째, 지표를 남긴다. 셋째, 소통 방식을 바꾼다."),
+        ("F-1", "매우 복잡한 승인 단계를 줄이고 정말 중요한 지표만 남긴다."),
+        ("I-5", "근본적인 혁신이 필요하다. 조직의 변화가 필요하다."),
+        ("A-12", "계약 체결이 이루어졌다."),
+        ("H-2", "하지만 어렵다. 그러나 가능하다. 하지만 늦다."),
+        ("A-14", "그는 보고했다. 그리고 앉았다. 그리고 떠났다."),
+    ]
+    for rule_id, text in cases:
+        assert rule_id in {f.category for f in local_detect(text, focus_categories=[rule_id]).findings}, rule_id
+    # Ordinal enumeration is advisory: never S1, so the style gate does not force it out.
+    assert {f.severity for f in local_detect(cases[0][1], focus_categories=["C-1"]).findings} == {"S2"}
+    # Below the density threshold nothing fires.
+    assert "F-1" not in {f.category for f in local_detect("매우 복잡한 승인 단계를 줄인다.", focus_categories=["F-1"]).findings}
+    assert "H-2" not in {f.category for f in local_detect("하지만 어렵다. 그러나 가능하다.", focus_categories=["H-2"]).findings}
+
+
+def test_compact_rulebook_keeps_fix_lines_for_undetected_rules():
+    compact = resources.compact_strict_rules()
+    assert "## F-2." in compact
+    assert "둘 중 하나만 남긴다" in compact  # F-2 수정 방안
+    assert "## A-13." in compact
+    assert "필요한 조사를 복원하고 동사로 풀어 쓴다" in compact  # A-13 수정 방안
+    assert "중요하고 핵심적인 역할" not in compact  # F-2 윤문 대상/예시 stay in the card
+    assert len(compact) < len(resources.strict_rules()) * 0.5

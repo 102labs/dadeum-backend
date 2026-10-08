@@ -40,11 +40,13 @@ def rule_card(rule_id: str) -> str:
 
 @lru_cache
 def compact_strict_rules() -> str:
-    """Rulebook with per-rule bodies removed.
+    """Rulebook with per-rule bodies reduced to the heading and the fix line.
 
     Keeps the global principles (sections 0-3), category preambles, every rule
-    heading line as an index, and the trailing global checklists. Per-rule
-    detail travels separately as rule cards attached to detected hints.
+    heading plus its "수정 방안" bullet as an index, and the trailing global
+    checklists. Full rule cards (signal, reason, fix, examples) travel
+    separately with detected hints; the fix line in the index lets the model
+    act on rules the regex detector has no pattern for.
     """
     kept: list[str] = []
     skipping = False
@@ -55,6 +57,9 @@ def compact_strict_rules() -> str:
             continue
         if line.startswith("#"):
             skipping = False
+        if skipping and line.startswith("* **수정 방안**"):
+            kept.append(line)
+            continue
         if not skipping:
             kept.append(line)
     compact = "\n".join(kept)

@@ -135,9 +135,10 @@ prepare -> rewrite -> style_gate -> audit -> (review) -> finalize
   rulebook hints. No LLM call.
 - `rewrite`: one structured LLM call. Text of 1,000+ chars
   (`HUMANIZE_CHUNK_MIN_CHARS`) is split at sentence boundaries into ~1,000-char
-  chunks, rewritten in parallel, and reassembled. The rulebook
-  (`strict-rules.md`, bodies stripped) rides in the static system prompt so
-  providers can prefix-cache it; the user payload carries the text, settings,
+  chunks, rewritten in parallel, and reassembled. The rulebook index
+  (`strict-rules.md`, each rule reduced to heading + fix line) and a short
+  Korean style guide ride in the static system prompt so providers can
+  prefix-cache it; the user payload carries the text, settings,
   and hints with full rule cards and up to 3 short match samples (never spans
   overlapping numbers, quotes, or protected terms).
 - `style_gate`: re-detect on the draft. If any S1 remains, S2 count reaches

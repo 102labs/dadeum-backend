@@ -29,12 +29,15 @@ SUPPORTED_STYLE_RULE_IDS = frozenset(
         "A-9",
         "A-10",
         "A-11",
+        "A-12",
+        "A-14",
         "A-15",
         "A-16",
         "A-18",
         "A-19",
         "B-1",
         "B-2",
+        "C-1",
         "C-5",
         "C-7",
         "C-8",
@@ -51,23 +54,48 @@ SUPPORTED_STYLE_RULE_IDS = frozenset(
         "E-1",
         "E-2",
         "E-7",
+        "F-1",
         "F-4",
         "F-5",
         "G-1",
         "G-2",
         "G-3",
         "H-1",
+        "H-2",
         "H-3",
         "H-4",
         "I-1",
         "I-2",
         "I-3",
         "I-4",
+        "I-5",
         "J-1",
         "J-2",
         "J-3",
     }
 )
+
+
+# Rules the rulebook describes as "남발/반복" (overuse) fire only when the
+# expression appears at least this many times in the text. A single
+# "할 수 있다", one "~고 있다", or one comma after a connective ending is normal
+# Korean; flagging it made the style gate rewrite healthy sentences.
+_MIN_OCCURRENCES: dict[str, int] = {
+    "A-5": 2,
+    "A-10": 3,
+    "A-11": 3,
+    "A-14": 2,
+    "A-18": 2,
+    "C-1": 2,
+    "C-11": 2,
+    "E-2": 4,
+    "F-1": 2,
+    "F-4": 3,
+    "G-1": 2,
+    "H-2": 3,
+    "I-4": 3,
+    "I-5": 2,
+}
 
 
 _QUICK_PATTERNS: tuple[tuple[str, str, str, str, re.Pattern[str], str], ...] = (
@@ -82,6 +110,8 @@ _QUICK_PATTERNS: tuple[tuple[str, str, str, str, re.Pattern[str], str], ...] = (
     ("A-9", "피동: ~에 의해", "S2", "span", re.compile(r"에\s*의(?:해|하여)"), "행위자를 주어로 옮깁니다."),
     ("A-10", "가능 표현 남발", "S2", "span", re.compile(r"할\s*수\s*있"), "가능하면 단언형으로 정리합니다."),
     ("A-11", "목적절: ~을 위해", "S2", "span", re.compile(r"(?:을|를)\s*위해"), "~려고, ~위한으로 바꿉니다."),
+    ("A-12", "자동 피동: 이루어지다/만들어지다", "S2", "span", re.compile(r"(?:이루어|만들어)(?:지|진|졌|집)"), "능동 구문이나 자연스러운 자동사로 바꿉니다."),
+    ("A-14", "문두 그리고", "S2", "span", re.compile(r"(?:^|[.!?。！？]\s*)그리고(?![가-힣])"), "연결어미로 압축하거나 삭제합니다."),
     (
         "A-15",
         "추상 주어와 만능 동사",
@@ -96,7 +126,12 @@ _QUICK_PATTERNS: tuple[tuple[str, str, str, str, re.Pattern[str], str], ...] = (
         "관계절 좌향 수식",
         "S2",
         "span",
-        re.compile(r"(?:(?:[가-힣A-Za-z0-9]+)\s+){3,}[가-힣A-Za-z0-9]+(?:한|하는|된|있는)\s+[가-힣A-Za-z0-9]+"),
+        # Two or more modifier clauses stacked in front of one noun, each
+        # allowed to carry an object or two ("사고를 일으킨 화학물질을 생산한
+        # 회사에서 일했던 남자"). A single modifier is ordinary Korean.
+        re.compile(
+            r"(?:[가-힣]+(?:한|하는|된|되는|있는|없는|했던|이던|던)\s+(?:[가-힣A-Za-z0-9]+\s+){0,2}){2,}[가-힣]+"
+        ),
         "문장 분리 또는 후치 동격절로 바꿉니다.",
     ),
     ("A-19", "이중 조사", "S2", "span", re.compile(r"(?:에서의|에로의|으로의|에의|으로부터의|로부터의)"), "절이나 구로 풀어 씁니다."),
@@ -109,12 +144,13 @@ _QUICK_PATTERNS: tuple[tuple[str, str, str, str, re.Pattern[str], str], ...] = (
         re.compile(r"\b(?:case|customer|framework|growth|impact|insight|issue|market|performance|risk|solution|strategy|target|trend|value)\b", re.IGNORECASE),
         "업계 표준이 아니면 한국어로 옮깁니다.",
     ),
+    ("C-1", "기계적 병렬 열거: 첫째/둘째/셋째", "S2", "span", re.compile(r"(?<![가-힣])(?:첫째|둘째|셋째|넷째|다섯째)(?![가-힣])"), "일부는 산문으로 녹이고 나머지는 변주합니다."),
     ("C-5", "이모지 남발", "S1", "span", _EMOJI_RE, "업무 문서에서는 삭제합니다."),
     ("C-7", "기계적 3단 접속", "S2", "span", re.compile(r"(?:^|[.!?。！？\n]\s*)(?:먼저|반면|결국)"), "접속사를 줄이거나 본문에 녹입니다."),
     ("C-8", "대칭 대구 공식", "S2", "span", re.compile(r"[가-힣A-Za-z0-9]+인가[,\s·]+[가-힣A-Za-z0-9]+인가"), "한 번만 남기고 평서문으로 바꿉니다."),
     ("C-9", "숫자 괄호 인덱싱", "S2", "span", re.compile(r"(?:\(\d+\)|\d+\)|[①②③④⑤⑥⑦⑧⑨])"), "본문에 녹이거나 단순 줄바꿈으로 바꿉니다."),
     ("C-10", "콜론 부제 헤딩 반복", "S2", "span", re.compile(r"(?m)^.{1,40}:\s*.{1,80}$"), "짧은 헤딩 또는 평서문으로 바꿉니다."),
-    ("C-11", "연결어미 뒤 쉼표", "S1", "span", re.compile(r"(?:고|며|지만|면서|아서|어서),"), "불필요한 쉼표를 제거합니다."),
+    ("C-11", "연결어미 뒤 쉼표", "S2", "span", re.compile(r"(?:고|며|지만|면서|아서|어서),"), "불필요한 쉼표를 제거합니다."),
     ("D-2", "AI 관용구", "S1", "span", re.compile(r"시사하는\s*바가\s*크다|주목할\s*만하다"), "삭제하거나 구체 결론으로 바꿉니다."),
     ("D-3", "강조 부사", "S1", "span", re.compile(r"본질적으로|핵심적으로"), "대부분 삭제합니다."),
     ("D-4", "hype 어휘", "S1", "span", re.compile(r"파격적|압도적|막강한|폭발적|대대적|강력한|획기적|치명적"), "구체 표현으로 낮춥니다."),
@@ -122,21 +158,54 @@ _QUICK_PATTERNS: tuple[tuple[str, str, str, str, re.Pattern[str], str], ...] = (
     ("D-6", "결말 공식", "S1", "span", re.compile(r"지금이야말로|할\s*때(?:다|입니다)|시점(?:이다|입니다)"), "평서형으로 닫습니다."),
     ("D-7", "변환 공식", "S2", "span", re.compile(r"[가-힣A-Za-z0-9]+에서\s+[가-힣A-Za-z0-9]+로|[가-힣A-Za-z0-9]+을\s*넘어\s*[가-힣A-Za-z0-9]+로"), "한 번만 남기고 일반 서술로 바꿉니다."),
     ("E-2", "동일 종결/진행형 매핑", "S2", "span", re.compile(r"고\s*있"), "단순 시제는 현재형·과거형으로 환원합니다."),
+    ("F-1", "정도부사 중독", "S2", "span", re.compile(r"(?<![가-힣])(?:매우|정말|진짜로|대단히|극히)(?![가-힣])"), "대부분 삭제하고, 강조가 필요하면 구체 근거로 바꿉니다."),
     ("F-4", "한자어·영어 명사화 누적", "S2", "span", re.compile(r"[가-힣]{2,}(?:성|적|화)|[A-Za-z]+(?:tion|ment|ness|ity)\b", re.IGNORECASE), "동사·형용사 어근이나 구체 명사로 풉니다."),
     ("F-5", "~적 N 추상 체인", "S2", "span", re.compile(r"[가-힣A-Za-z]+적\s+[가-힣A-Za-z]+"), "명사+명사 또는 풀어쓰기 형태로 바꿉니다."),
     ("G-1", "미래 단정", "S2", "span", re.compile(r"(?:것이다|할\s*것이다)"), "현재형·확정형으로 줄입니다."),
     ("G-2", "추정 남발", "S2", "span", re.compile(r"로\s*보인다|인\s*듯하다|듯하다"), "단언 가능한 곳은 단언합니다."),
     ("G-3", "안전 균형 lexicon", "S2", "span", re.compile(r"양쪽\s*모두|두\s*가지\s*모두|장점도\s*있지만"), "구체 비교나 조건부 판단으로 바꿉니다."),
     ("H-1", "문두 접속사", "S2", "span", re.compile(r"(?:^|[.!?\n]\s*)(또한|따라서|즉|나아가|아울러|게다가|더욱이)"), "문장 자체의 흐름으로 연결합니다."),
+    ("H-2", "역접 접속사 반복", "S2", "span", re.compile(r"(?<![가-힣])(?:하지만|그러나)(?![가-힣])"), "절반 이상 삭제하고 필요한 곳만 남깁니다."),
     ("H-3", "메타 진입", "S1", "span", re.compile(r"(?<![가-힣])이는(?![가-힣])|이\s*점에서|이\s*관점에서|이\s*말은"), "본문에 녹이거나 삭제합니다."),
     ("H-4", "재정의 접속사 즉 남발", "S2", "span", re.compile(r"(?<![가-힣])즉(?![가-힣])"), "1회 정도만 남깁니다."),
     ("I-1", "형식명사 결말", "S1", "span", re.compile(r"(?:인|한)\s*것이다"), "평서형으로 줄입니다."),
     ("I-2", "점에 있다 공식", "S2", "span", re.compile(r"(?:은|는)\s*[^.!?\n]{1,60}라는\s+점에\s+있"), "직설형으로 바꿉니다."),
     ("I-3", "의미 설명 결말", "S2", "span", re.compile(r"다는\s*(?:뜻|의미)이다"), "본문에 풀어 씁니다."),
     ("I-4", "권고형 결말 반복", "S2", "span", re.compile(r"해야\s*(?:한다|합니다)"), "평서·단언으로 줄입니다."),
+    ("I-5", "추상명사+필요하다", "S2", "span", re.compile(r"[가-힣]{2,}(?:이|가)\s*필요(?:하다|합니다|했다|해요)"), "누가 무엇을 해야 하는지 주어와 동사로 구체화합니다."),
     ("J-1", "마크다운 강조", "S2", "span", re.compile(r"\*\*[^*\n]{1,80}\*\*"), "칼럼·리포트에서는 제거합니다."),
     ("J-3", "불릿 리스트", "S2", "span", re.compile(r"(?m)^\s*[-*]\s+.+$"), "문단 산문으로 통합합니다."),
 )
+
+
+_FORMAL_END_RE = re.compile(r"(?:습니다|입니다|합니다|됩니다|십시오|습니까|입니까|니다|시오)$")
+_HAEYO_END_RE = re.compile(r"(?:요|죠)$")
+_PLAIN_END_RE = re.compile(r"(?:다|까|라|자|냐|지)$")
+
+
+def detect_register(text: str) -> str:
+    """Dominant sentence-final register: formal(합쇼체), haeyo(해요체),
+    plain(해라체), mixed (해라체 mixed with a polite register), or unknown."""
+    counts: Counter[str] = Counter()
+    for sentence in split_sentences(text):
+        body = sentence.rstrip(".!?。！？ \t\"”’'")
+        if not body:
+            continue
+        if _FORMAL_END_RE.search(body):
+            counts["formal"] += 1
+        elif _HAEYO_END_RE.search(body):
+            counts["haeyo"] += 1
+        elif _PLAIN_END_RE.search(body):
+            counts["plain"] += 1
+    if not counts:
+        return "unknown"
+    polite = counts["formal"] + counts["haeyo"]
+    plain = counts["plain"]
+    if plain and polite and max(plain, polite) / (plain + polite) < 0.8:
+        return "mixed"
+    if plain >= polite:
+        return "plain"
+    return "formal" if counts["formal"] >= counts["haeyo"] else "haeyo"
 
 
 def split_sentences(text: str) -> list[str]:
@@ -161,9 +230,14 @@ def local_detect(
     for rule_id, label, severity, scope, pattern, fix in _QUICK_PATTERNS:
         if not _focus_allows(rule_id, focus):
             continue
-        for index, match in enumerate(pattern.finditer(text), start=1):
-            if rule_id not in {"B-1", "C-9"} and _overlaps_protected(match.start(), match.end(), protected_ranges):
-                continue
+        matches = [
+            match
+            for match in pattern.finditer(text)
+            if rule_id in {"B-1", "C-9"} or not _overlaps_protected(match.start(), match.end(), protected_ranges)
+        ]
+        if len(matches) < _MIN_OCCURRENCES.get(rule_id, 1):
+            continue
+        for index, match in enumerate(matches, start=1):
             span = match.group(0)
             findings.append(
                 Finding(
@@ -410,9 +484,11 @@ def _dedupe_findings(findings: list[Finding]) -> list[Finding]:
 
 
 def _has_da_ending_streak(sentences: list[str]) -> bool:
+    """Four or more consecutive plain "~다" endings. 합쇼체 ("~니다") runs are
+    the normal register of notices and reports and do not count."""
     streak = 0
     for sentence in sentences:
-        if re.search(r"(?:다|니다|된다|이다)[.!?。！？]?$", sentence.strip()):
+        if re.search(r"(?<!니)다[.!?。！？]?$", sentence.strip()):
             streak += 1
             if streak >= 4:
                 return True

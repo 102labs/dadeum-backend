@@ -2,6 +2,7 @@ import json
 import re
 from typing import Any
 
+from humanize_core.im_not_ai.audit import detect_register
 from humanize_core.im_not_ai.preservation import exact_preserve_targets as build_exact_preserve_targets
 from humanize_core.im_not_ai.resources import compact_strict_rules, rule_card
 from humanize_core.im_not_ai.schemas import AuditResult, ReviewSegment
@@ -15,6 +16,18 @@ _REWRITE_STRUCTURED_OUTPUT_CONTRACT = [
     "If revisedText and changes[].revised disagree, the response is invalid. Copy the complete final passage into revisedText before returning JSON.",
     "summary may describe what changed, but it must not be the only place that contains the completed rewrite.",
 ]
+GOOD_KOREAN_STYLE = (
+    "좋은 한국어 업무 문장의 기준:\n"
+    "- 주어와 서술어가 가깝고, 한 문장에 메시지가 하나다.\n"
+    "- 추상 명사와 형식명사 대신 구체 동사로 서술한다. '~의 ~화를 위한 ~의 추진' 같은 명사 사슬을 푼다.\n"
+    "- 문장은 접속사가 아니라 내용으로 이어진다. '또한/따라서/즉'은 대부분 지워도 흐름이 남는다.\n"
+    "- 영어 직역 투(~에 대해, ~를 통해, ~에 의해, ~되어지다, 그/그녀)는 한국어 조사와 어미로 돌린다.\n"
+    "- 상투구('시사하는 바가 크다', '지금이야말로 ~할 때다')는 지우거나 구체 사실로 바꾼다. 다른 상투구로 갈아 끼우지 않는다.\n"
+    "- 원문의 격식·종결 등급·거리감을 그대로 둔다. 겸양('드립니다')을 낮추지 않는다.\n"
+    "- 쉬운 말을 한자어로 바꾸지 않는다('늦었다'를 '지연되었다'로). 뜻이 같은 다른 단어로 갈아 끼우지 않는다('관리'를 '운영'으로).\n"
+    "- 글쓴이의 판단 강도를 바꾸지 않는다. 추측은 추측으로, 예정은 예정으로, 가능은 가능으로 둔다."
+)
+
 CHANGES_CONTRACT = [
     "changes는 사용자에게 '무엇을 왜 바꿨는지' 보여 주는 목록이다. 실제로 바꾼 구간마다 하나씩 기록한다.",
     "original은 원문에 그대로 들어 있는 짧은 조각, revised는 revisedText에 그대로 들어 있는 조각이다. 한 문장을 넘지 않게 자른다.",
@@ -37,13 +50,14 @@ def rewrite_system_prompt() -> str:
         "You are the backend port of the im-not-ai Korean business rewrite engine. "
         "Perform an active rewrite pass: improve the whole Korean business passage in one call. "
         "Your job is rewriting, not auditing; a later audit will check preservation problems. "
-        "Apply the rulebook assertively: remove translationese, reduce repetition, improve word order, rhythm, transitions, and business clarity across the passage. "
-        "Keep facts, numbers, dates, names, quotations, URLs, and code intact while applying the requested tone inside the same business context. "
-        "Never use preservation as a reason to copy safe surrounding prose unchanged. "
-        "revisedText must differ from the original with concrete wording edits whenever any safe expression can be improved. "
+        "Apply the rulebook where it applies: remove translationese, AI-signature idioms, and mechanical repetition, and fix awkward word order, so the passage reads as if a careful Korean colleague wrote it. "
+        "Edit only what is actually wrong. A sentence that is already natural and breaks no rule is copied unchanged; rewording it is itself an AI tell (over-editing). "
+        "Keep facts, numbers, dates, names, quotations, URLs, and code intact. Keep the writer's modality (guess, possibility, plan, recommendation), degree, subject, tense and honorific level; style rules never license changing them. "
         "Use user_intent, tone, and preserve_formatting to choose tone and formatting. "
         "Do not add new claims, examples, metaphors, facts, or citations. "
         "Do not expose hidden reasoning. Return only JSON matching the schema.\n\n"
+        + GOOD_KOREAN_STYLE
+        + "\n\n"
         "아래는 모든 rewrite 판단의 기준이 되는 한국어 윤문 룰북(im_not_ai_quick_rules)의 압축본이다. "
         "적용 원칙, 보존 규칙, 처리 순서, 전체 룰 목록(제목·심각도)을 담고 있으며, "
         "사용자 메시지의 원문에 이 원칙을 적극 적용한다. "
@@ -61,24 +75,33 @@ def rewrite_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str
         "rewrite_pass": "active_rulebook_single_pass",
         "rewrite_strategy": "active_rulebook_single_pass: 시스템 프롬프트의 룰북(im_not_ai_quick_rules)을 적극 적용해 원문 전체를 바로 윤문하고, 완성본 전체를 revisedText로 반환한다. 보존 감사는 다음 audit 단계가 담당한다.",
         "rewrite_scope": "문장 흐름, 어순, 리듬, 연결, 명확성, 번역투, 반복 구조, AI 티 패턴을 전체 글 기준으로 적극 다듬고 여러 구간에서 실제 표현을 개선하되 원문의 의미와 정보량은 보존한다.",
-        "must_edit_policy": [
-            "원문을 그대로 반환하는 것은 rewrite 실패다.",
-            "보존 대상, 코드, 직접 인용만으로 이루어진 입력이 아니라면 최소 하나 이상의 안전한 표현 개선을 만든다.",
-            "보존해야 하는 값은 그대로 두되, 그 주변 문장 흐름·어순·반복·번역투·장황한 연결은 적극적으로 다듬는다.",
-            "수치·날짜·직접 인용이 있다는 이유로 전체 문장을 복사하지 않는다.",
-            "일반 업무 설명문은 의미가 같아도 표현, 어순, 연결, 종결 중 최소 하나는 더 자연스럽고 간결하게 바뀌어야 한다.",
-            "changes가 비어 있거나 revisedText가 원문과 같으면 실패 출력으로 간주한다.",
+        "edit_policy": [
+            "탐지된 룰 위반(rewrite_priorities)과 직접 보이는 AI 티·번역투는 반드시 고친다. 수치·날짜·인용이 있는 문장도 그 주변 표현은 고친다.",
+            "이미 자연스럽고 룰 위반이 없는 문장은 글자 그대로 둔다. 바꾸기 위해 바꾸지 않는다. 멀쩡한 문장을 흔드는 것도 AI 티다.",
+            "동의어 교체 금지: '관리'→'운영', '결과'→'성과', '늦었다'→'지연되었다'처럼 뜻이 같은 다른 단어로 바꾸지 않는다. 쉬운 말을 한자어로 올리지 않는다.",
+            "양태 유지: 추측(~로 보인다, ~것 같다), 가능(~할 수 있었다), 예정(~할 예정이다), 권고(~해야 한다)의 등급을 바꾸지 않는다. "
+            "완곡 표현은 같은 글에서 습관처럼 반복될 때만 줄이고, 실제 불확실성·가능성은 그대로 둔다.",
+            "정도 표현: 정도부사(매우·정말·대단히)는 지울 수 있지만 다른 강도의 말로 바꾸지 않는다. '대단히 어려운'→'어려운'은 되고 '쉽지 않은'은 안 된다.",
+            "주체·시제·진행 유지: 주어를 빼거나 바꿔 행위 주체가 달라지지 않게 한다. '~고 있다'는 같은 글에서 여러 번 반복될 때 일부만 단순 시제로 줄이고, "
+            "'지금 진행 중'이라는 뜻이 핵심인 문장은 그대로 둔다.",
+            _register_policy(request),
+            "지운 상투구를 다른 상투구로 갈아 끼우지 않는다('시사하는 바가 크다'→'여러 측면에서 의미가 있다'는 실패). 지우거나 구체 사실로 바꾼다.",
+            "원문이 이미 깨끗하면 revisedText가 원문과 같아도 된다. 그때 changes는 비워 둔다.",
         ],
         "edit_intensity": {
             "target": "변경률 숫자가 아니라 룰북 신호 해결과 문체 체감성을 목표로 삼는다.",
-            "minimum": "S1/S2 신호, 반복 표현, 장황한 설명, 어색한 연결, 번역투가 하나라도 있으면 해당 구간에 실질 수정이 있어야 한다.",
-            "avoid": "새 정보 추가, 과한 마케팅 톤, 원문 구조 파괴, 인용·수치·날짜 변경",
+            "minimum": "S1/S2 신호, 반복 표현, 번역투가 있으면 해당 구간에 실질 수정이 있어야 한다.",
+            "avoid": "새 정보 추가, 과한 마케팅 톤, 원문 구조 파괴, 인용·수치·날짜 변경, 멀쩡한 문장 손대기, 동의어 교체",
         },
         "edit_examples": [
-            "켤 수도 있고, 실행할 수도 있습니다 -> 켜거나 실행할 수 있습니다",
-            "꺼져 있다면 -> 꺼져 있으면",
-            "먼저 목표를 달성하기 위한 작업 계획을 -> 목표 달성을 위한 작업 계획을 먼저",
-            "사용할 만한 스킬들을 찾아 정리해줍니다 -> 관련 스킬을 찾아 정리해줍니다",
+            "이번 프로젝트에 대해 간략히 공유드립니다 -> 이번 프로젝트를 간략히 공유드립니다 ('에 대해' 제거, '드립니다' 유지)",
+            "데이터 분석을 통해 원인을 파악할 수 있었고 -> 데이터를 분석해 원인을 파악할 수 있었고 ('통해' 제거, 가능 양태 유지)",
+            "여러 부서에 의해 검토되어졌고 -> 여러 부서가 검토했고 (by-피동과 이중 피동을 능동으로)",
+            "결론적으로 하반기 전략의 핵심은 유지율이다 -> 하반기 전략의 핵심은 유지율이다 (결산 라벨 삭제)",
+            "우리 팀은 강한 실행력을 가지고 있습니다 -> 우리 팀은 실행력이 강합니다 (have 직역을 형용사 서술로)",
+            "하지 말 것: 대응이 40분 늦었습니다 -> 대응이 40분 지연되었습니다 (쉬운 말을 한자어로 바꾼 과윤문)",
+            "하지 말 것: 시안은 이번 주까지 나올 거 같고요 -> 시안은 이번 주까지 나올 예정이며 (추측을 확정으로 바꾼 의미 변화)",
+            "하지 말 것: 기업들이 앞다투어 도입하고 있다 -> 기업들이 앞다투어 도입한다 (단발 진행형을 지워 '지금 진행 중'이 사라짐)",
         ],
         "structured_output_contract": _REWRITE_STRUCTURED_OUTPUT_CONTRACT,
         "self_check_required": [
@@ -87,6 +110,8 @@ def rewrite_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str
             "선택된 tone을 반영하되 업무 문맥과 격식 범위 보존",
             "잔존 S1 패턴 0건",
             "원문에 없는 사실·예시·비유·근거·과한 마케팅 문구 추가 없음",
+            "바뀐 문장마다 '왜 바꿨는지'가 룰 위반 또는 눈에 보이는 어색함으로 설명되는지 확인한다. 설명이 안 되면 원문으로 되돌린다.",
+            "추측·예정·가능·권고의 등급, 주어, 높임 등급이 원문과 같은지 확인한다.",
             "user_intent, tone, preserve_formatting 반영",
         ],
         "changes_contract": CHANGES_CONTRACT,
@@ -251,12 +276,22 @@ def _prompt_header(mode: str, request: RewriteRequest) -> dict[str, Any]:
     }
 
 
+_REGISTER_LABELS = {
+    "formal": "합쇼체(~습니다/~입니다)",
+    "haeyo": "해요체(~해요/~예요)",
+    "plain": "해라체(~다/~한다)",
+    "mixed": "혼합(해라체와 공손체가 섞임)",
+    "unknown": "판별 불가",
+}
+
+
 def request_settings(request: RewriteRequest) -> dict[str, Any]:
     return {
         "user_intent": request.user_intent,
         "mode_policy": "single_active_rewrite_with_preservation_audit",
         "tone": request.tone,
         "preserve_formatting": request.preserve_formatting,
+        "source_register": _REGISTER_LABELS.get(detect_register(request.text), "판별 불가"),
     }
 
 
@@ -293,12 +328,30 @@ def _single_mode_guidance() -> str:
     )
 
 
+def _register_policy(request: RewriteRequest) -> str:
+    if request.tone == "formal":
+        return (
+            "종결 등급: tone=formal이므로 해요체·반말·구어('~할게요', '~거예요', '좀', '근데')를 합쇼체('~합니다', '~입니다')로 바꾼다. "
+            "겸양 표현('드립니다')은 유지한다."
+        )
+    if request.tone == "friendly":
+        return (
+            "종결 등급: tone=friendly이므로 딱딱한 관료체 명사화와 피동은 풀되, 공손한 등급(합쇼체 또는 해요체)은 유지한다. "
+            "겸양 표현('드립니다')을 낮추지 않는다."
+        )
+    return (
+        "높임 등급 유지: '공유드립니다', '부탁드립니다' 같은 겸양·높임을 낮추지 않는다. "
+        "settings.source_register의 종결 등급을 그대로 쓴다(합쇼체는 합쇼체로, 해요체는 해요체로). 혼합이면 가장 많이 쓰인 등급으로 통일한다."
+    )
+
+
 def _tone_guidance(tone: str) -> str:
     if tone == "formal":
         return (
-            "격식 있는 비즈니스 문체로 조절한다. 단정한 서술형·하십시오/합니다 계열 종결을 우선하고, "
-            "구어적 축약과 느슨한 표현을 줄이며, 전문적이되 과장 없는 어휘를 사용한다. "
-            "새 정보나 과한 권위 표현은 추가하지 않는다."
+            "격식 있는 비즈니스 문체로 바꾼다. 모든 문장을 하십시오/합니다 계열 종결로 바꾸고, "
+            "구어적 축약과 느슨한 표현('좀', '근데', '~거 같고요')을 격식 표현으로 옮긴다. 이때 추측·가능성의 양태는 그대로 둔다"
+            "('나올 거 같고요' → '나올 것으로 보입니다', '들어갈 수 있을 거예요' → '시작할 수 있을 것으로 보입니다'). "
+            "전문적이되 과장 없는 어휘를 사용하고, 새 정보나 과한 권위 표현은 추가하지 않는다."
         )
     if tone == "friendly":
         return (
@@ -306,7 +359,8 @@ def _tone_guidance(tone: str) -> str:
             "업무상 예의와 신뢰감은 유지한다. 지나친 구어체, 감탄, 농담, 과장 표현은 피한다."
         )
     return (
-        "기존 톤과 격식을 유지한다. 새 톤을 만들지 않되 어색한 표현, 반복, 장황한 연결, 번역투는 적극적으로 정리한다. "
+        "기존 톤과 격식을 유지한다. settings.source_register의 종결 등급을 그대로 쓰고(합쇼체는 합쇼체로, 해요체는 해요체로), "
+        "혼합이면 가장 많이 쓰인 등급으로 통일한다. 새 톤을 만들지 않되 어색한 표현, 반복, 번역투는 정리한다. "
         "원문의 거리감과 말투를 보존하면서 문장 품질만 높인다."
     )
 
