@@ -40,6 +40,7 @@ def create_app(
             strict_audit_model_name=runtime_settings.strict_audit_model_name,
             strict_review_model_name=runtime_settings.strict_review_model_name,
             explain_model_name=runtime_settings.explain_model_name,
+            reasoning_effort=runtime_settings.reasoning_effort,
         )
         graph_runner = RewriteGraphRunner(runtime_settings, llm, debug_log)
 

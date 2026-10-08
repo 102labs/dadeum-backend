@@ -30,6 +30,10 @@ class Settings(BaseSettings):
         default="anthropic/claude-haiku-5.5",
         alias="HUMANIZE_STRICT_AUDIT_MODEL_NAME",
     )
+    # OpenRouter unified reasoning control for every pipeline call
+    # (rewrite, style repair, audit, segment review, explain). "none" sends
+    # nothing, so each model runs at its provider default.
+    reasoning_effort: str = Field(default="none", alias="HUMANIZE_REASONING_EFFORT")
     explain_model_name: str | None = Field(default="anthropic/claude-sonnet-5.5", alias="HUMANIZE_EXPLAIN_MODEL_NAME")
     strict_review_model_name: str = Field(
         default="anthropic/claude-haiku-5.5",

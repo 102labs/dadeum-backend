@@ -62,6 +62,7 @@ async def _run_probe(args: argparse.Namespace, text: str) -> dict[str, Any]:
         strict_audit_model_name=settings.strict_audit_model_name,
         strict_review_model_name=settings.strict_review_model_name,
         explain_model_name=settings.explain_model_name,
+        reasoning_effort=settings.reasoning_effort,
     )
     runner = RewriteGraphRunner(settings, llm)
     state: dict[str, Any] = {"request": request, "started_at": time.perf_counter()}

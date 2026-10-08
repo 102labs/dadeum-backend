@@ -9,6 +9,7 @@ import sys
 import time
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from humanize_core.api import create_app
@@ -40,6 +41,7 @@ from humanize_core.im_not_ai.schemas import (
 from humanize_core.llm import (
     AnthropicRewriteLLM,
     MAX_OUTPUT_TOKENS,
+    LLMConfigurationError,
     LLMResponseError,
     OpenAIRewriteLLM,
     OpenRouterRewriteLLM,
@@ -3027,3 +3029,25 @@ def test_detector_flags_personified_abstract_subjects_with_object_phrases():
     categories = [f.category for f in local_detect(text, focus_categories=["D-5"]).findings]
     assert categories.count("D-5") == 2
     assert "D-5" not in {f.category for f in local_detect("팀장이 질문을 던졌다.", focus_categories=["D-5"]).findings}
+
+
+def test_openrouter_reasoning_effort_is_sent_only_when_configured():
+    from humanize_core.llm import _normalize_reasoning_effort, _openrouter_chat_kwargs
+
+    base = dict(model="m", system="s", user="u", max_tokens=10, schema_name="x", schema={"type": "object", "properties": {}})
+    assert "reasoning" not in _openrouter_chat_kwargs(**base)["extra_body"]
+    assert _openrouter_chat_kwargs(**base, reasoning_effort="medium")["extra_body"]["reasoning"] == {"effort": "medium"}
+    assert _openrouter_chat_kwargs(**base, reasoning_effort="medium")["extra_body"]["provider"] == {"require_parameters": True}
+
+    assert _normalize_reasoning_effort(None) is None
+    assert _normalize_reasoning_effort("none") is None
+    assert _normalize_reasoning_effort(" Medium ") == "medium"
+    with pytest.raises(LLMConfigurationError):
+        _normalize_reasoning_effort("max")
+
+
+def test_settings_reads_reasoning_effort(monkeypatch):
+    monkeypatch.setenv("HUMANIZE_REASONING_EFFORT", "low")
+    assert Settings(_env_file=None).reasoning_effort == "low"
+    monkeypatch.delenv("HUMANIZE_REASONING_EFFORT")
+    assert Settings(_env_file=None).reasoning_effort == "none"

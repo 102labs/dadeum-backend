@@ -890,6 +890,7 @@ def _build_report(
             "chunkMinChars": settings.chunk_min_chars,
             "styleGateMaxRounds": settings.style_gate_max_rounds,
             "styleGateS2Threshold": settings.style_gate_s2_threshold,
+            "reasoningEffort": settings.reasoning_effort,
             "judge": bool(args.judge),
             "pairwise": bool(args.pairwise),
             "judgeCases": list(args.judge_case or []),
@@ -1254,6 +1255,7 @@ def _build_runner(settings: Settings, provider: str, recorder: StageRecorder) ->
         strict_audit_model_name=settings.strict_audit_model_name,
         strict_review_model_name=settings.strict_review_model_name,
         explain_model_name=settings.explain_model_name,
+        reasoning_effort=settings.reasoning_effort,
     )
     return RewriteGraphRunner(settings, llm, recorder)  # type: ignore[arg-type]
 

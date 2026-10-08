@@ -171,9 +171,11 @@ class OpenRouterRewriteLLM:
         strict_audit_model_name: str,
         strict_review_model_name: str,
         explain_model_name: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         if not api_key:
             raise LLMConfigurationError("OPENROUTER_API_KEY is required for OpenRouter provider")
+        self.reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.app_title = app_title
@@ -324,6 +326,7 @@ class OpenRouterRewriteLLM:
                         max_tokens=max_tokens,
                         schema_name=schema_name,
                         schema=output_type.model_json_schema(),
+                        reasoning_effort=self.reasoning_effort,
                     )
                 )
                 content = _extract_chat_content(response)
@@ -352,6 +355,7 @@ def create_llm(
     strict_audit_model_name: str = "anthropic/claude-haiku-5.5",
     strict_review_model_name: str = "anthropic/claude-haiku-5.5",
     explain_model_name: str | None = "anthropic/claude-sonnet-5.5",
+    reasoning_effort: str | None = None,
 ) -> RewriteLLM:
     normalized = provider.lower().strip()
     if normalized == "stub":
@@ -372,6 +376,7 @@ def create_llm(
             strict_audit_model_name=strict_audit_model_name,
             strict_review_model_name=strict_review_model_name,
             explain_model_name=explain_model_name,
+            reasoning_effort=reasoning_effort,
         )
     raise LLMConfigurationError(f"Unsupported HUMANIZE_MODEL_PROVIDER: {provider}")
 
@@ -467,6 +472,20 @@ def _normalize_openrouter_schema_node(node: Any) -> None:
                 _normalize_openrouter_schema_node(child)
 
 
+_REASONING_EFFORTS = frozenset({"low", "medium", "high"})
+
+
+def _normalize_reasoning_effort(value: str | None) -> str | None:
+    normalized = (value or "").strip().lower()
+    if normalized in {"", "none", "off", "default"}:
+        return None
+    if normalized not in _REASONING_EFFORTS:
+        raise LLMConfigurationError(
+            f"HUMANIZE_REASONING_EFFORT must be none, low, medium or high (got {value!r})"
+        )
+    return normalized
+
+
 def _openrouter_chat_kwargs(
     *,
     model: str,
@@ -475,9 +494,14 @@ def _openrouter_chat_kwargs(
     max_tokens: int,
     schema_name: str,
     schema: dict[str, Any],
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     # With require_parameters=true, optional sampling controls can remove all
-    # eligible providers. Keep the OpenRouter structured request surface minimal.
+    # eligible providers. Keep the OpenRouter structured request surface minimal;
+    # the unified `reasoning` block is added only when an effort is configured.
+    extra_body: dict[str, Any] = {"provider": {"require_parameters": True}}
+    if reasoning_effort:
+        extra_body["reasoning"] = {"effort": reasoning_effort}
     return {
         "model": model,
         "messages": [
@@ -486,7 +510,7 @@ def _openrouter_chat_kwargs(
         ],
         "max_tokens": max_tokens,
         "response_format": _openrouter_response_format(schema_name, schema),
-        "extra_body": {"provider": {"require_parameters": True}},
+        "extra_body": extra_body,
     }
 
 
