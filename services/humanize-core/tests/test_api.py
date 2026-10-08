@@ -1584,7 +1584,8 @@ async def test_strict_conditional_audit_without_blocking_edits_skips_review():
 
     assert calls == ["rewrite", "audit"]
     assert response.revisedText == "2026년 보고서입니다."
-    assert any("복원 필요 가능성" in warning for warning in response.warnings)
+    # Advisory model prose stays in the debug log, not in the user-facing warnings.
+    assert not any("복원 필요 가능성" in warning for warning in response.warnings)
 
 
 async def test_strict_returns_truncated_review_candidate_without_terminal_rollback():
@@ -2635,7 +2636,7 @@ async def test_low_severity_rewrite_flag_becomes_warning_without_review():
 
     assert calls == ["rewrite", "audit"]
     assert response.revisedText == "이 지표는 개선해야 한다."
-    assert any("추론 양태가 다소 강해졌습니다" in warning for warning in response.warnings)
+    assert response.warnings == []
 
 
 async def test_local_repair_skips_style_restore_that_reintroduces_s1():
@@ -3019,3 +3020,10 @@ def test_compact_rulebook_keeps_fix_lines_for_undetected_rules():
     assert "필요한 조사를 복원하고 동사로 풀어 쓴다" in compact  # A-13 수정 방안
     assert "중요하고 핵심적인 역할" not in compact  # F-2 윤문 대상/예시 stay in the card
     assert len(compact) < len(resources.strict_rules()) * 0.5
+
+
+def test_detector_flags_personified_abstract_subjects_with_object_phrases():
+    text = "기술의 발전은 우리에게 새로운 질문을 던지고 있다. 변화의 흐름이 대응을 요구한다."
+    categories = [f.category for f in local_detect(text, focus_categories=["D-5"]).findings]
+    assert categories.count("D-5") == 2
+    assert "D-5" not in {f.category for f in local_detect("팀장이 질문을 던졌다.", focus_categories=["D-5"]).findings}

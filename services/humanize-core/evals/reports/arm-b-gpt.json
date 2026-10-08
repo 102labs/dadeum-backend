@@ -1,0 +1,2345 @@
+{
+  "createdAt": "2026-10-08T23:43:51",
+  "provider": "openrouter",
+  "models": {
+    "rewrite": "openai/gpt-5-mini",
+    "rewriteFallback": "~anthropic/claude-haiku-latest",
+    "audit": "~anthropic/claude-haiku-latest",
+    "review": "openai/gpt-5.4-mini",
+    "judge": "openai/gpt-5.4"
+  },
+  "config": {
+    "runs": 1,
+    "chunkMinChars": 1000,
+    "styleGateMaxRounds": 2,
+    "styleGateS2Threshold": 3,
+    "judge": true,
+    "pairwise": false,
+    "judgeCases": [],
+    "judgeTags": [],
+    "baseline": null,
+    "rejudgedFrom": "evals/reports/arm-b.json"
+  },
+  "summary": {
+    "casesRun": 12,
+    "casesFailed": [],
+    "inputS1": 36,
+    "residualS1": 0,
+    "s1ResolutionRate": 1.0,
+    "inputS2": 48,
+    "residualS2": 10,
+    "s2ResolutionRate": 0.792,
+    "meanChangeRate": 11.55,
+    "expectationsPassed": 122,
+    "expectationsTotal": 124,
+    "expectationPassRate": 0.984,
+    "casesWithFailedExpectations": [
+      "tone-04"
+    ],
+    "preservationFailCases": [],
+    "completionFailCases": [],
+    "overPolishCases": [],
+    "registerDriftCases": [
+      "tone-04"
+    ],
+    "displayUnsafeCases": [],
+    "fallbackReasonRate": 0.0,
+    "fallbackReasonCases": [],
+    "pipeline": {
+      "styleGateFiredCases": 1,
+      "meanStyleGateRounds": 0.08,
+      "reviewRanCases": 4,
+      "reviewLocalFallbackCases": 0,
+      "chunkedCases": 0,
+      "auditStatusCounts": {
+        "conditional_pass": 6,
+        "full_pass": 6
+      }
+    },
+    "meanLatencyMs": 43641.0,
+    "totalInputTokens": 237590,
+    "totalOutputTokens": 63921,
+    "judge": {
+      "naturalness": 4.42,
+      "aiTell": 4.0,
+      "meaning": 3.92,
+      "overEdit": 4.0,
+      "reasonQuality": 4.17,
+      "registerFit": 4.25,
+      "overall": 4.0,
+      "casesBelow3": [
+        "unreg-01"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "tr-01",
+      "tags": [
+        "번역투",
+        "핵심"
+      ],
+      "note": "~에 대해/통해/에 있어/관련하여 밀집 (A-1, A-2, A-3, A-5)",
+      "ok": true,
+      "metrics": {
+        "inputS1": 5,
+        "inputS2": 3,
+        "residualS1": 0,
+        "residualS2": 0,
+        "changeRate": 14.29,
+        "lengthRatio": 0.846,
+        "overPolishSignals": [],
+        "preservationIssues": [],
+        "completionWarnings": [],
+        "responseWarnings": [
+          "'라는 점에서'가 '이므로'로 바뀌어 원문의 근거 제시가 명시적 인과로 바뀌었습니다. 의미 차이는 작지만 확인이 필요합니다.",
+          "'집중적으로'가 빠져 논의의 강도와 우선순위 강조가 약해졌습니다.",
+          "원문의 '~라는 점에서'는 근거 제시에 가까웠으나, '이므로'로 바뀌면서 인과관계가 더 직접적으로 단정되었습니다."
+        ],
+        "register": {
+          "original": "formal",
+          "revised": "formal",
+          "expected": "formal",
+          "ok": true
+        },
+        "changeQuality": {
+          "count": 7,
+          "displaySafe": true,
+          "unsafeSnippetCount": 0,
+          "fallbackReasonCount": 0,
+          "emptyReasonCount": 0,
+          "nonKoreanReasonCount": 0,
+          "noopChangeCount": 0,
+          "overflowNote": false,
+          "textChangedWithoutChanges": false
+        },
+        "expectations": [
+          {
+            "name": "보존 대상 유지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "완성도",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "격식 유지",
+            "passed": true,
+            "detail": "기대 formal / 결과 formal (원문 formal)"
+          },
+          {
+            "name": "변경 목록 표시 가능",
+            "passed": true,
+            "detail": "비표시 스니펫 0건"
+          },
+          {
+            "name": "변경 사유 존재",
+            "passed": true,
+            "detail": "대체 사유 0건, 빈 사유 0건"
+          },
+          {
+            "name": "제거: 에 대해",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: [을를] 통해",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 에 있어",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "최대 1회: 관련하여",
+            "passed": true,
+            "detail": "결과 0회"
+          }
+        ],
+        "expectationsPassed": 9,
+        "expectationsTotal": 9,
+        "latencyMs": 45050,
+        "inputTokens": 19243,
+        "outputTokens": 5870,
+        "pipeline": {
+          "stages": [
+            "prepare",
+            "rewrite",
+            "style_gate",
+            "audit",
+            "finalize"
+          ],
+          "durationsMs": {
+            "prepare": 0,
+            "rewrite": 24154,
+            "style_gate": 0,
+            "audit": 8033,
+            "finalize": 12854
+          },
+          "chunkCount": 1,
+          "styleGateRounds": 0,
+          "styleGateImplementation": "style_repair",
+          "auditStatus": "conditional_pass",
+          "auditFlaggedEdits": 2,
+          "reviewRan": false,
+          "reviewImplementation": null,
+          "failedStage": null,
+          "styleGateInitialScore": 0.0,
+          "styleGateFinalScore": 0.0,
+          "unexplainedChanges": 3,
+          "explainedChanges": 7,
+          "explainFailed": false
+        },
+        "judge": {
+          "naturalness": 4,
+          "aiTell": 4,
+          "meaning": 3,
+          "overEdit": 4,
+          "reasonQuality": 4,
+          "registerFit": 4,
+          "overall": 4,
+          "issues": [
+            "'프로젝트를 공유드립니다'는 다소 어색함",
+            "'라는 점에서'를 '이므로'로 바꿔 인과가 더 강해짐",
+            "'집중적으로'가 빠져 강조가 약해짐"
+          ]
+        }
+      },
+      "revisedText": "이번 프로젝트를 간략히 공유드립니다. 데이터를 분석해 고객 이탈 원인을 파악할 수 있었고, 설문 조사로 추가 인사이트를 얻었습니다. 서비스 개선에서 가장 중요한 것은 응답 속도이므로, 다음 분기에는 인프라 개선을 중심으로 논의할 예정입니다. 의견이 있으시면 회신 부탁드립니다.",
+      "changes": [
+        {
+          "original": "이번 프로젝트에 대해 간략히 공유드립니다.",
+          "revised": "이번 프로젝트를 간략히 공유드립니다.",
+          "reason": "'프로젝트에 대해 공유드립니다'는 번역투여서 목적격 조사 '를'로 바로 이어 '프로젝트를 공유드립니다'로 바꿨습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": "간략히 공유드립니다. 데이터 분석을 통해 고객 이탈의 원인에 대해 파악할 수 있었고, 설문",
+          "revised": "간략히 공유드립니다. 데이터를 분석해 고객 이탈 원인을 파악할 수 있었고, 설문",
+          "reason": "'분석을 통해'는 '분석해'로, '이탈의 원인에 대해 파악'은 '이탈 원인을 파악'으로 줄여 군더더기 조사를 걷어 냈습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "파악할 수 있었고, 설문 조사를 통해 추가 인사이트를",
+          "revised": "파악할 수 있었고, 설문 조사로 추가 인사이트를",
+          "reason": "'설문 조사를 통해'는 수단을 돌려 말하는 표현이라 조사 '로'만 붙여 '설문 조사로'로 짧게 바꿨습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": "얻었습니다. 서비스 개선에 있어 가장 중요한 것은 응답",
+          "revised": "얻었습니다. 서비스 개선에서 가장 중요한 것은 응답",
+          "reason": "'서비스 개선에 있어'는 딱딱한 번역투라 범위를 나타내는 조사 '에서'를 써서 '서비스 개선에서'로 고쳤습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": "가장 중요한 것은 응답 속도라는 점에서, 다음 분기에는 인프라",
+          "revised": "가장 중요한 것은 응답 속도이므로, 다음 분기에는 인프라",
+          "reason": "'응답 속도라는 점에서'는 이유인지 관점인지 모호해, 이유가 분명히 드러나는 '응답 속도이므로'로 바꿨습니다.",
+          "type": "clarity",
+          "riskLevel": "low"
+        },
+        {
+          "original": " 다음 분기에는 인프라 개선과 관련하여 집중적으로 논의할 예정입니다.",
+          "revised": " 다음 분기에는 인프라 개선을 중심으로 논의할 예정입니다.",
+          "reason": "'개선과 관련하여 집중적으로 논의'를 '개선을 중심으로 논의'로 줄였는데, '집중적으로'라는 강조는 '중심으로'에 흡수되어 뉘앙스가 약간 달라질 수 있습니다.",
+          "type": "meaning",
+          "riskLevel": "medium"
+        },
+        {
+          "original": "논의할 예정입니다. 관련하여 의견이 있으시면 회신",
+          "revised": "논의할 예정입니다. 의견이 있으시면 회신",
+          "reason": "문장 첫머리의 '관련하여'는 무엇과 관련되는지 가리키지 않는 군더더기라 삭제하고 '의견이 있으시면'으로 바로 시작했습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        }
+      ],
+      "summary": [
+        "'~에 대해', '~을 통해', '~에 있어' 같은 번역투 표현을 '를', '로', '에서' 등 한국어 조사로 바꿨습니다.",
+        "'관련하여' 같은 군더더기를 지우거나 줄여 문장을 간결하게 만들었습니다.",
+        "'라는 점에서'를 '이므로'로 바꿔 이유가 분명히 드러나게 했고, 합쇼체 말투는 그대로 유지했습니다.",
+        "'집중적으로 논의'가 '중심으로 논의'로 바뀐 부분은 강조의 정도가 조금 달라질 수 있으니 확인이 필요합니다."
+      ],
+      "warnings": [
+        "'라는 점에서'가 '이므로'로 바뀌어 원문의 근거 제시가 명시적 인과로 바뀌었습니다. 의미 차이는 작지만 확인이 필요합니다.",
+        "'집중적으로'가 빠져 논의의 강도와 우선순위 강조가 약해졌습니다.",
+        "원문의 '~라는 점에서'는 근거 제시에 가까웠으나, '이므로'로 바뀌면서 인과관계가 더 직접적으로 단정되었습니다."
+      ]
+    },
+    {
+      "id": "tr-02",
+      "tags": [
+        "번역투",
+        "핵심"
+      ],
+      "note": "가지고 있다/이중 피동/~에 의해 (A-7, A-8, A-9, A-12)",
+      "ok": true,
+      "metrics": {
+        "inputS1": 1,
+        "inputS2": 5,
+        "residualS1": 0,
+        "residualS2": 0,
+        "changeRate": 17.04,
+        "lengthRatio": 0.873,
+        "overPolishSignals": [],
+        "preservationIssues": [],
+        "completionWarnings": [],
+        "responseWarnings": [
+          "'여겨집니다'(considered)가 '보입니다'(appears)로 바뀌어 판단의 근거가 약간 다르게 읽힐 수 있으나, 두 표현 모두 추정의 양태를 유지하므로 수정은 필요하지 않습니다."
+        ],
+        "register": {
+          "original": "formal",
+          "revised": "formal",
+          "expected": "formal",
+          "ok": true
+        },
+        "changeQuality": {
+          "count": 7,
+          "displaySafe": true,
+          "unsafeSnippetCount": 0,
+          "fallbackReasonCount": 0,
+          "emptyReasonCount": 0,
+          "nonKoreanReasonCount": 0,
+          "noopChangeCount": 0,
+          "overflowNote": false,
+          "textChangedWithoutChanges": false
+        },
+        "expectations": [
+          {
+            "name": "보존 대상 유지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "완성도",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "격식 유지",
+            "passed": true,
+            "detail": "기대 formal / 결과 formal (원문 formal)"
+          },
+          {
+            "name": "변경 목록 표시 가능",
+            "passed": true,
+            "detail": "비표시 스니펫 0건"
+          },
+          {
+            "name": "변경 사유 존재",
+            "passed": true,
+            "detail": "대체 사유 0건, 빈 사유 0건"
+          },
+          {
+            "name": "유지: 다음 달",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "제거: 가지고 있",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 되어졌|보여집|되어질|여겨집",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 에 의해",
+            "passed": true,
+            "detail": ""
+          }
+        ],
+        "expectationsPassed": 9,
+        "expectationsTotal": 9,
+        "latencyMs": 37872,
+        "inputTokens": 18975,
+        "outputTokens": 4544,
+        "pipeline": {
+          "stages": [
+            "prepare",
+            "rewrite",
+            "style_gate",
+            "audit",
+            "finalize"
+          ],
+          "durationsMs": {
+            "prepare": 0,
+            "rewrite": 24050,
+            "style_gate": 0,
+            "audit": 5159,
+            "finalize": 8386
+          },
+          "chunkCount": 1,
+          "styleGateRounds": 0,
+          "styleGateImplementation": "style_repair",
+          "auditStatus": "full_pass",
+          "auditFlaggedEdits": 0,
+          "reviewRan": false,
+          "reviewImplementation": null,
+          "failedStage": null,
+          "styleGateInitialScore": 0.0,
+          "styleGateFinalScore": 0.0,
+          "unexplainedChanges": 3,
+          "explainedChanges": 7,
+          "explainFailed": false
+        },
+        "judge": {
+          "naturalness": 5,
+          "aiTell": 5,
+          "meaning": 4,
+          "overEdit": 5,
+          "reasonQuality": 4,
+          "registerFit": 5,
+          "overall": 5,
+          "issues": [
+            "'여겨집니다'→'보입니다'는 판단 주체 뉘앙스가 조금 달라짐",
+            "일부 reason이 피동 설명에 치우쳐 의미 차이 설명은 짧음"
+          ]
+        }
+      },
+      "revisedText": "우리 팀은 실행력이 강합니다. 이번 개편안은 여러 부서가 검토했으며 초기 우려와 달리 긍정적으로 보입니다. 새 프로세스는 자동화 도구가 관리하며 기존에 수작업으로 진행되던 승인 절차도 개선될 것으로 보입니다. 도입 효과는 다음 달 보고서에서 확인될 예정입니다.",
+      "changes": [
+        {
+          "original": "우리 팀은 강한 실행력을 가지고 있습니다. 이번 개편안은 여러",
+          "revised": "우리 팀은 실행력이 강합니다. 이번 개편안은 여러",
+          "reason": "'강한 실행력을 가지고 있습니다'는 소유 표현을 빌린 번역투라 '실행력이 강합니다'로 짧게 풀었습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": " 이번 개편안은 여러 부서에 의해 검토되어졌고, 초기 우려와 달리",
+          "revised": " 이번 개편안은 여러 부서가 검토했으며 초기 우려와 달리",
+          "reason": "'여러 부서에 의해 검토되어졌고'는 피동이 겹친 표현이라 '여러 부서가 검토했으며'로 바꾸고 쉼표 대신 '~으며'로 이었습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": "우려와 달리 긍정적으로 보여집니다. 새 프로세스는 자동화",
+          "revised": "우려와 달리 긍정적으로 보입니다. 새 프로세스는 자동화",
+          "reason": "'보여집니다'는 '보이다'에 피동 '~지다'가 또 붙은 이중 피동이라 '보입니다'로 고쳤습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": " 새 프로세스는 자동화 도구에 의해 관리되며, 기존에 수작업으로",
+          "revised": " 새 프로세스는 자동화 도구가 관리하며 기존에 수작업으로",
+          "reason": "'자동화 도구에 의해 관리되며'는 피동 구문이라 도구를 주어로 삼아 '자동화 도구가 관리하며'로 바꾸고 쉼표도 뺐습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": " 기존에 수작업으로 이루어지던 승인 절차도 개선될",
+          "revised": " 기존에 수작업으로 진행되던 승인 절차도 개선될",
+          "reason": "'이루어지던'은 '수작업으로'와 어울리게 쓰였지만 다소 막연해서 구체적인 '진행되던'으로 바꿨습니다.",
+          "type": "clarity",
+          "riskLevel": "low"
+        },
+        {
+          "original": "절차도 개선될 것으로 여겨집니다. 도입 효과는 다음 달",
+          "revised": "절차도 개선될 것으로 보입니다. 도입 효과는 다음 달",
+          "reason": "'여겨집니다'는 '여기다'에 '~지다'가 붙은 피동 표현이라 더 평이한 '보입니다'로 바꿨는데, 판단하는 주체의 느낌이 조금 옅어집니다.",
+          "type": "meaning",
+          "riskLevel": "medium"
+        },
+        {
+          "original": "다음 달 보고서에서 확인되어질 예정입니다.",
+          "revised": "다음 달 보고서에서 확인될 예정입니다.",
+          "reason": "'확인되어질'은 '되다'에 '~지다'가 겹친 이중 피동이라 '확인될'로 줄였습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        }
+      ],
+      "summary": [
+        "'~되어지다', '보여지다' 같은 이중 피동을 '확인될', '보입니다'처럼 단순한 형태로 고쳤습니다.",
+        "'~에 의해 …되며' 같은 피동 구문을 행위자가 주어인 능동문으로 바꿨습니다.",
+        "'강한 실행력을 가지고 있습니다'를 '실행력이 강합니다'로 줄이고 쉼표 연결을 '~으며'로 정리했습니다.",
+        "합쇼체 말투는 그대로 유지했습니다."
+      ],
+      "warnings": [
+        "'여겨집니다'(considered)가 '보입니다'(appears)로 바뀌어 판단의 근거가 약간 다르게 읽힐 수 있으나, 두 표현 모두 추정의 양태를 유지하므로 수정은 필요하지 않습니다."
+      ]
+    },
+    {
+      "id": "tr-04",
+      "tags": [
+        "번역투",
+        "핵심"
+      ],
+      "note": "그/그것/그들 영어 대명사 직역 (A-16)",
+      "ok": true,
+      "metrics": {
+        "inputS1": 5,
+        "inputS2": 4,
+        "residualS1": 0,
+        "residualS2": 1,
+        "changeRate": 6.71,
+        "lengthRatio": 0.948,
+        "overPolishSignals": [],
+        "preservationIssues": [],
+        "completionWarnings": [],
+        "responseWarnings": [],
+        "register": {
+          "original": "plain",
+          "revised": "plain",
+          "expected": "plain",
+          "ok": true
+        },
+        "changeQuality": {
+          "count": 5,
+          "displaySafe": true,
+          "unsafeSnippetCount": 0,
+          "fallbackReasonCount": 0,
+          "emptyReasonCount": 0,
+          "nonKoreanReasonCount": 0,
+          "noopChangeCount": 0,
+          "overflowNote": false,
+          "textChangedWithoutChanges": false
+        },
+        "expectations": [
+          {
+            "name": "보존 대상 유지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "완성도",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "격식 유지",
+            "passed": true,
+            "detail": "기대 plain / 결과 plain (원문 plain)"
+          },
+          {
+            "name": "변경 목록 표시 가능",
+            "passed": true,
+            "detail": "비표시 스니펫 0건"
+          },
+          {
+            "name": "변경 사유 존재",
+            "passed": true,
+            "detail": "대체 사유 0건, 빈 사유 0건"
+          },
+          {
+            "name": "유지: 김 팀장",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 다음 달",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "최대 1회: 그는|그가|그것은|그것이|그들은",
+            "passed": true,
+            "detail": "결과 0회"
+          }
+        ],
+        "expectationsPassed": 8,
+        "expectationsTotal": 8,
+        "latencyMs": 46552,
+        "inputTokens": 19825,
+        "outputTokens": 5827,
+        "pipeline": {
+          "stages": [
+            "prepare",
+            "rewrite",
+            "style_gate",
+            "audit",
+            "review",
+            "finalize"
+          ],
+          "durationsMs": {
+            "prepare": 0,
+            "rewrite": 27928,
+            "style_gate": 0,
+            "audit": 10316,
+            "review": 1534,
+            "finalize": 6490
+          },
+          "chunkCount": 1,
+          "styleGateRounds": 0,
+          "styleGateImplementation": "style_repair",
+          "auditStatus": "conditional_pass",
+          "auditFlaggedEdits": 1,
+          "reviewRan": true,
+          "reviewImplementation": "review_segments",
+          "failedStage": null,
+          "styleGateInitialScore": 2.0,
+          "styleGateFinalScore": 2.0,
+          "unexplainedChanges": 3,
+          "explainedChanges": 5,
+          "explainFailed": false
+        },
+        "judge": {
+          "naturalness": 4,
+          "aiTell": 4,
+          "meaning": 4,
+          "overEdit": 4,
+          "reasonQuality": 4,
+          "registerFit": 5,
+          "overall": 4,
+          "issues": [
+            "마지막 문장에서 '제안한'의 주체가 덜 분명함",
+            "'시작되고 끝나면'은 연결이 다소 매끈하지 않음"
+          ]
+        }
+      },
+      "revisedText": "김 팀장은 어제 신규 기능 시연을 진행했다. 발표에서 온보딩 개선안을 설명했고, 개선안은 참석자들에게 좋은 반응을 얻었다. 참석자들은 특히 자동 설정 기능에 관심을 보였다. 제안한 일정에 따르면 다음 달부터 베타 테스트가 시작되고 끝나면 전사 배포가 진행된다.",
+      "changes": [
+        {
+          "original": "기능 시연을 진행했다. 그는 발표에서 온보딩 개선안을",
+          "revised": "기능 시연을 진행했다. 발표에서 온보딩 개선안을",
+          "reason": "앞 문장 주어가 '김 팀장'으로 이어지므로 '그는'을 빼고 '발표에서'로 바로 시작해 대명사 반복을 없앴습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "개선안을 설명했고, 그것은 참석자들에게 좋은 반응을",
+          "revised": "개선안을 설명했고, 개선안은 참석자들에게 좋은 반응을",
+          "reason": "'그것은'이 무엇을 가리키는지 흐릿해서 '개선안은'으로 바꿔 좋은 반응을 얻은 대상을 분명히 했습니다.",
+          "type": "clarity",
+          "riskLevel": "low"
+        },
+        {
+          "original": "좋은 반응을 얻었다. 그들은 특히 자동 설정 기능에",
+          "revised": "좋은 반응을 얻었다. 참석자들은 특히 자동 설정 기능에",
+          "reason": "'그들은'이 팀장과 참석자 중 누구인지 모호해서 '참석자들은'으로 바꿔 관심을 보인 주체를 밝혔습니다.",
+          "type": "clarity",
+          "riskLevel": "low"
+        },
+        {
+          "original": "기능에 관심을 보였다. 그가 제안한 일정에 따르면",
+          "revised": "기능에 관심을 보였다. 제안한 일정에 따르면",
+          "reason": "'그가 제안한'의 '그가'는 앞 맥락에서 주어가 이어지므로 생략해 '제안한 일정에 따르면'으로 간결하게 했습니다.",
+          "type": "concision",
+          "riskLevel": "medium"
+        },
+        {
+          "original": "달부터 베타 테스트가 시작되고, 그것이 끝나면 전사 배포가",
+          "revised": "달부터 베타 테스트가 시작되고 끝나면 전사 배포가",
+          "reason": "'그것이'를 빼 대명사 지시를 없애고 '시작되고' 뒤 쉼표도 지워 두 절이 한 흐름으로 읽히게 했습니다.",
+          "type": "structure",
+          "riskLevel": "medium"
+        }
+      ],
+      "summary": [
+        "'그, 그것, 그들' 같은 대명사를 '참석자들', '개선안'처럼 구체적인 명사로 바꾸거나 생략했습니다.",
+        "앞 문장에서 주어가 이어지는 곳은 주어를 빼서 반복을 줄였습니다.",
+        "한 문장 안의 쉼표를 정리해 흐름을 매끄럽게 했습니다."
+      ],
+      "warnings": []
+    },
+    {
+      "id": "ai-01",
+      "tags": [
+        "AI관용구",
+        "핵심"
+      ],
+      "note": "시사하는 바가 크다/주목할 만하다/결말 공식 (D-2, D-3, D-5, D-6)",
+      "ok": true,
+      "metrics": {
+        "inputS1": 5,
+        "inputS2": 2,
+        "residualS1": 0,
+        "residualS2": 1,
+        "changeRate": 20.59,
+        "lengthRatio": 0.813,
+        "overPolishSignals": [],
+        "preservationIssues": [],
+        "completionWarnings": [],
+        "responseWarnings": [
+          "첫두 문장을 하나로 합치면서 초점이 약간 재배치되었으니 원형 유지가 필요하면 알려달라.",
+          "'본질적으로'라는 한정어가 삭제되었다. 의미 변화는 경미하나 사람이 확인할 만한 주의점이다."
+        ],
+        "register": {
+          "original": "plain",
+          "revised": "plain",
+          "expected": "plain",
+          "ok": true
+        },
+        "changeQuality": {
+          "count": 5,
+          "displaySafe": true,
+          "unsafeSnippetCount": 0,
+          "fallbackReasonCount": 0,
+          "emptyReasonCount": 0,
+          "nonKoreanReasonCount": 0,
+          "noopChangeCount": 0,
+          "overflowNote": false,
+          "textChangedWithoutChanges": false
+        },
+        "expectations": [
+          {
+            "name": "보존 대상 유지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "완성도",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "격식 유지",
+            "passed": true,
+            "detail": "기대 plain / 결과 plain (원문 plain)"
+          },
+          {
+            "name": "변경 목록 표시 가능",
+            "passed": true,
+            "detail": "비표시 스니펫 0건"
+          },
+          {
+            "name": "변경 사유 존재",
+            "passed": true,
+            "detail": "대체 사유 0건, 빈 사유 0건"
+          },
+          {
+            "name": "유지: 두 달",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "제거: 시사하는 바가 크다",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 주목할 만하다",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 본질적으로",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 지금이야말로",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 할 때다",
+            "passed": true,
+            "detail": ""
+          }
+        ],
+        "expectationsPassed": 11,
+        "expectationsTotal": 11,
+        "latencyMs": 38209,
+        "inputTokens": 19132,
+        "outputTokens": 4766,
+        "pipeline": {
+          "stages": [
+            "prepare",
+            "rewrite",
+            "style_gate",
+            "audit",
+            "finalize"
+          ],
+          "durationsMs": {
+            "prepare": 0,
+            "rewrite": 26473,
+            "style_gate": 0,
+            "audit": 4886,
+            "finalize": 6842
+          },
+          "chunkCount": 1,
+          "styleGateRounds": 0,
+          "styleGateImplementation": "style_repair",
+          "auditStatus": "full_pass",
+          "auditFlaggedEdits": 0,
+          "reviewRan": false,
+          "reviewImplementation": null,
+          "failedStage": null,
+          "styleGateInitialScore": 2.0,
+          "styleGateFinalScore": 2.0,
+          "unexplainedChanges": 1,
+          "explainedChanges": 5,
+          "explainFailed": false
+        },
+        "judge": {
+          "naturalness": 4,
+          "aiTell": 4,
+          "meaning": 3,
+          "overEdit": 3,
+          "reasonQuality": 4,
+          "registerFit": 3,
+          "overall": 3,
+          "issues": [
+            "'지금이야말로' 삭제로 촉구의 시점감이 약해짐",
+            "마지막 문장이 '해야 할 때다'에서 '해야 한다'로 더 강해짐",
+            "첫두 문장 결합으로 원문의 강조 구조가 바뀜"
+          ]
+        }
+      },
+      "revisedText": "이번 실험 결과에서 소규모 팀이 두 달 만에 의미 있는 성과를 냈다는 사실이 특히 눈에 띈다. 중요한 것은 속도가 아니라 방향이다. 기술 발전이 우리에게 새로운 질문을 던진다. 조직 전체가 실험 문화를 받아들여야 한다.",
+      "changes": [
+        {
+          "original": "이번 실험 결과는 시사하는 바가 크다. 소규모 팀이 두 달 만에",
+          "revised": "이번 실험 결과에서 소규모 팀이 두 달 만에",
+          "reason": "'시사하는 바가 크다'는 내용 없이 의미만 부풀리는 문장이라 지우고, 그 뒤 문장의 '실험 결과에서'로 구체적인 사실부터 이어 말했습니다.",
+          "type": "concision",
+          "riskLevel": "medium"
+        },
+        {
+          "original": "의미 있는 성과를 냈다는 점은 주목할 만하다. 본질적으로 중요한 것은 속도가",
+          "revised": "의미 있는 성과를 냈다는 사실이 특히 눈에 띈다. 중요한 것은 속도가",
+          "reason": "'~라는 점은 주목할 만하다'를 '~라는 사실이 특히 눈에 띈다'로 바꿨고, 군더더기인 '본질적으로'는 뺐습니다.",
+          "type": "clarity",
+          "riskLevel": "low"
+        },
+        {
+          "original": "속도가 아니라 방향이다. 기술의 발전은 우리에게 새로운 질문을",
+          "revised": "속도가 아니라 방향이다. 기술 발전이 우리에게 새로운 질문을",
+          "reason": "'기술의 발전은'을 '기술 발전이'로 줄여 조사 연결을 덜어내고 주어를 간결하게 만들었습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "우리에게 새로운 질문을 던지고 있다. 지금이야말로 조직 전체가 실험 문화를",
+          "revised": "우리에게 새로운 질문을 던진다. 조직 전체가 실험 문화를",
+          "reason": "'던지고 있다'를 '던진다'로 줄여 불필요한 진행형을 없앴고, 강조 부사 '지금이야말로'도 빼서 문장을 간결하게 했습니다.",
+          "type": "concision",
+          "riskLevel": "medium"
+        },
+        {
+          "original": "실험 문화를 받아들여야 할 때다.",
+          "revised": "실험 문화를 받아들여야 한다.",
+          "reason": "'받아들여야 할 때다'는 시점을 짚는 돌려 말하기라 '받아들여야 한다'로 바꿔 주장을 곧바로 드러냈습니다.",
+          "type": "tone",
+          "riskLevel": "medium"
+        }
+      ],
+      "summary": [
+        "내용 없이 의미만 부풀리는 표현을 덜어내고 구체적인 사실을 앞에 두었습니다.",
+        "'본질적으로', '지금이야말로' 같은 강조어와 '던지고 있다' 같은 진행형을 줄여 문장을 간결하게 했습니다.",
+        "'~할 때다' 같은 돌려 말하는 결말을 '~해야 한다'로 바꿔 주장을 직접 드러냈습니다."
+      ],
+      "warnings": [
+        "첫두 문장을 하나로 합치면서 초점이 약간 재배치되었으니 원형 유지가 필요하면 알려달라.",
+        "'본질적으로'라는 한정어가 삭제되었다. 의미 변화는 경미하나 사람이 확인할 만한 주의점이다."
+      ]
+    },
+    {
+      "id": "ai-04",
+      "tags": [
+        "AI관용구",
+        "접속사",
+        "핵심"
+      ],
+      "note": "결산 피벗 반복 + 문두 접속사 (D-1, H-1)",
+      "ok": true,
+      "metrics": {
+        "inputS1": 0,
+        "inputS2": 6,
+        "residualS1": 0,
+        "residualS2": 1,
+        "changeRate": 15.25,
+        "lengthRatio": 0.893,
+        "overPolishSignals": [],
+        "preservationIssues": [],
+        "completionWarnings": [],
+        "responseWarnings": [],
+        "register": {
+          "original": "plain",
+          "revised": "plain",
+          "expected": "plain",
+          "ok": true
+        },
+        "changeQuality": {
+          "count": 8,
+          "displaySafe": true,
+          "unsafeSnippetCount": 0,
+          "fallbackReasonCount": 0,
+          "emptyReasonCount": 0,
+          "nonKoreanReasonCount": 0,
+          "noopChangeCount": 0,
+          "overflowNote": false,
+          "textChangedWithoutChanges": false
+        },
+        "expectations": [
+          {
+            "name": "보존 대상 유지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "완성도",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "격식 유지",
+            "passed": true,
+            "detail": "기대 plain / 결과 plain (원문 plain)"
+          },
+          {
+            "name": "변경 목록 표시 가능",
+            "passed": true,
+            "detail": "비표시 스니펫 0건"
+          },
+          {
+            "name": "변경 사유 존재",
+            "passed": true,
+            "detail": "대체 사유 0건, 빈 사유 0건"
+          },
+          {
+            "name": "유지: CRM",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "제거: 결론적으로",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 요약하면",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 정리하면",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "최대 1회: (?:^|[.!?]\\s*)(?:또한|따라서|나아가)",
+            "passed": true,
+            "detail": "결과 0회"
+          }
+        ],
+        "expectationsPassed": 10,
+        "expectationsTotal": 10,
+        "latencyMs": 48138,
+        "inputTokens": 20627,
+        "outputTokens": 5912,
+        "pipeline": {
+          "stages": [
+            "prepare",
+            "rewrite",
+            "style_gate",
+            "audit",
+            "review",
+            "finalize"
+          ],
+          "durationsMs": {
+            "prepare": 0,
+            "rewrite": 26180,
+            "style_gate": 0,
+            "audit": 7079,
+            "review": 1253,
+            "finalize": 13616
+          },
+          "chunkCount": 1,
+          "styleGateRounds": 0,
+          "styleGateImplementation": "style_repair",
+          "auditStatus": "conditional_pass",
+          "auditFlaggedEdits": 1,
+          "reviewRan": true,
+          "reviewImplementation": "review_segments",
+          "failedStage": null,
+          "styleGateInitialScore": 4.0,
+          "styleGateFinalScore": 4.0,
+          "unexplainedChanges": 3,
+          "explainedChanges": 8,
+          "explainFailed": false
+        },
+        "judge": {
+          "naturalness": 5,
+          "aiTell": 4,
+          "meaning": 5,
+          "overEdit": 5,
+          "reasonQuality": 5,
+          "registerFit": 5,
+          "overall": 5,
+          "issues": [
+            "'상승한 것으로 나타났다'는 다소 보고서체 표현"
+          ]
+        }
+      },
+      "revisedText": "이번 조사에서는 재구매율이 상승한 것으로 나타났다. 재구매율 상승을 고려하면 기존 고객 관리에 자원을 더 투입할 필요가 있다. 신규 채널 실험도 병행해야 한다. 하반기 전략의 핵심은 유지율이다. 획득보다 유지가 중요하므로 CRM 조직의 역할이 커질 것이다. 자원 배분의 우선순위를 다시 세워야 한다.",
+      "changes": [
+        {
+          "original": "또한 이번 조사에서는 재구매율이",
+          "revised": "이번 조사에서는 재구매율이",
+          "reason": "문장 맨 앞의 '또한'은 첫 문장에서 이을 앞 내용이 없어 군더더기라 삭제했습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "상승한 것으로 나타났다. 따라서 기존 고객 관리에",
+          "revised": "상승한 것으로 나타났다. 재구매율 상승을 고려하면 기존 고객 관리에",
+          "reason": "'따라서'만으로는 근거가 모호해 '재구매율 상승을 고려하면'으로 바꿔 판단의 이유를 직접 밝혔습니다.",
+          "type": "meaning",
+          "riskLevel": "medium"
+        },
+        {
+          "original": "기존 고객 관리에 더 많은 자원을 투입할 필요가 있다.",
+          "revised": "기존 고객 관리에 자원을 더 투입할 필요가 있다.",
+          "reason": "'더 많은 자원을'은 수식어가 길어, '자원을 더'로 바꿔 부사 하나로 간결하게 줄였습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "투입할 필요가 있다. 나아가 신규 채널 실험도",
+          "revised": "투입할 필요가 있다. 신규 채널 실험도",
+          "reason": "문두의 '나아가'는 앞 문장과 이미 자연스럽게 이어져서 지우고 '신규 채널 실험도'로 바로 시작했습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "실험도 병행해야 한다. 결론적으로 하반기 전략의 핵심은",
+          "revised": "실험도 병행해야 한다. 하반기 전략의 핵심은",
+          "reason": "'결론적으로'는 결론임을 알리는 표지일 뿐이라 삭제하고 핵심 주장을 바로 말하게 했습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "핵심은 유지율이다. 요약하면 획득보다 유지가",
+          "revised": "핵심은 유지율이다. 획득보다 유지가",
+          "reason": "'요약하면'은 뒤 문장이 요약이라는 표시만 더해서 빼고, '획득보다 유지가'로 곧장 시작했습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "획득보다 유지가 중요하며, 따라서 CRM 조직의 역할이",
+          "revised": "획득보다 유지가 중요하므로 CRM 조직의 역할이",
+          "reason": "'중요하며, 따라서'처럼 쉼표와 접속부사로 잇던 인과를 '중요하므로' 하나의 어미로 묶었습니다.",
+          "type": "structure",
+          "riskLevel": "low"
+        },
+        {
+          "original": "역할이 커질 것이다. 정리하면 자원 배분의 우선순위를",
+          "revised": "역할이 커질 것이다. 자원 배분의 우선순위를",
+          "reason": "문장 앞의 '정리하면'은 내용을 더하지 않는 군더더기라 삭제하고 '자원 배분의'로 시작했습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        }
+      ],
+      "summary": [
+        "'또한', '나아가', '결론적으로', '요약하면', '정리하면' 같은 문두 연결어와 정리 표지를 걷어 내 문장을 간결하게 했습니다.",
+        "'따라서'를 '재구매율 상승을 고려하면'으로 바꿔 권고의 근거를 문장 안에서 분명히 밝혔습니다.",
+        "'중요하며, 따라서'를 '중요하므로'로 묶고 '더 많은 자원을'을 '자원을 더'로 줄여 표현을 다듬었습니다."
+      ],
+      "warnings": []
+    },
+    {
+      "id": "pv-01",
+      "tags": [
+        "보존",
+        "수치",
+        "핵심"
+      ],
+      "note": "매출·비율·인원 수치 밀집. 수치 훼손 없이 번역투만 정리해야 함",
+      "ok": true,
+      "metrics": {
+        "inputS1": 1,
+        "inputS2": 0,
+        "residualS1": 0,
+        "residualS2": 0,
+        "changeRate": 2.84,
+        "lengthRatio": 0.963,
+        "overPolishSignals": [],
+        "preservationIssues": [],
+        "completionWarnings": [],
+        "responseWarnings": [],
+        "register": {
+          "original": "formal",
+          "revised": "formal",
+          "expected": "formal",
+          "ok": true
+        },
+        "changeQuality": {
+          "count": 3,
+          "displaySafe": true,
+          "unsafeSnippetCount": 0,
+          "fallbackReasonCount": 0,
+          "emptyReasonCount": 0,
+          "nonKoreanReasonCount": 0,
+          "noopChangeCount": 0,
+          "overflowNote": false,
+          "textChangedWithoutChanges": false
+        },
+        "expectations": [
+          {
+            "name": "보존 대상 유지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "완성도",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "격식 유지",
+            "passed": true,
+            "detail": "기대 formal / 결과 formal (원문 formal)"
+          },
+          {
+            "name": "변경 목록 표시 가능",
+            "passed": true,
+            "detail": "비표시 스니펫 0건"
+          },
+          {
+            "name": "변경 사유 존재",
+            "passed": true,
+            "detail": "대체 사유 0건, 빈 사유 0건"
+          },
+          {
+            "name": "유지: 42억 7천만 원",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 18.3%",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 6억 2천만 원",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 14.5%",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 12,400명",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 10,000명",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 89만 명",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 50억 원",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 15,000명",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 3분기",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 4분기",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "제거: [을를] 통해",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 관련하여",
+            "passed": true,
+            "detail": ""
+          }
+        ],
+        "expectationsPassed": 18,
+        "expectationsTotal": 18,
+        "latencyMs": 28622,
+        "inputTokens": 17734,
+        "outputTokens": 3331,
+        "pipeline": {
+          "stages": [
+            "prepare",
+            "rewrite",
+            "style_gate",
+            "audit",
+            "finalize"
+          ],
+          "durationsMs": {
+            "prepare": 0,
+            "rewrite": 21515,
+            "style_gate": 0,
+            "audit": 2877,
+            "finalize": 4221
+          },
+          "chunkCount": 1,
+          "styleGateRounds": 0,
+          "styleGateImplementation": "style_repair",
+          "auditStatus": "full_pass",
+          "auditFlaggedEdits": 0,
+          "reviewRan": false,
+          "reviewImplementation": null,
+          "failedStage": null,
+          "styleGateInitialScore": 0.0,
+          "styleGateFinalScore": 0.0,
+          "unexplainedChanges": 1,
+          "explainedChanges": 3,
+          "explainFailed": false
+        },
+        "judge": {
+          "naturalness": 5,
+          "aiTell": 4,
+          "meaning": 5,
+          "overEdit": 5,
+          "reasonQuality": 5,
+          "registerFit": 5,
+          "overall": 5,
+          "issues": []
+        }
+      },
+      "revisedText": "3분기 매출은 42억 7천만 원으로 전년 동기 대비 18.3% 증가했습니다. 영업이익은 6억 2천만 원, 영업이익률은 14.5%입니다. 신규 가입자는 12,400명으로 목표치 10,000명을 초과 달성했으며 월간 활성 사용자는 89만 명을 기록했습니다. 4분기 목표는 매출 50억 원, 신규 가입자 15,000명입니다. 자세한 내용은 첨부 자료에서 확인하실 수 있습니다.",
+      "changes": [
+        {
+          "original": "10,000명을 초과 달성했으며, 월간 활성 사용자는",
+          "revised": "10,000명을 초과 달성했으며 월간 활성 사용자는",
+          "reason": "연결 어미 '~으며' 바로 뒤에 붙은 쉼표를 지워 두 절이 끊기지 않고 한 문장으로 이어지게 했습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": "15,000명입니다. 관련하여 자세한 내용은 첨부",
+          "revised": "15,000명입니다. 자세한 내용은 첨부",
+          "reason": "앞 문장들을 이어받는 '관련하여'는 없어도 뜻이 통하는 군더더기라 삭제하고 '자세한 내용은'으로 바로 시작했습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "자세한 내용은 첨부 자료를 통해 확인하실 수 있습니다.",
+          "revised": "자세한 내용은 첨부 자료에서 확인하실 수 있습니다.",
+          "reason": "'자료를 통해'는 수단을 뜻하는 번역투 표현이라 장소·출처를 나타내는 조사 '에서'로 바꿔 짧게 만들었습니다.",
+          "type": "clarity",
+          "riskLevel": "low"
+        }
+      ],
+      "summary": [
+        "연결 어미 뒤의 불필요한 쉼표를 지워 문장 흐름을 매끄럽게 했습니다.",
+        "없어도 뜻이 통하는 '관련하여'를 삭제했습니다.",
+        "'~를 통해'를 '~에서'로 바꿔 번역투를 줄였습니다."
+      ],
+      "warnings": []
+    },
+    {
+      "id": "pv-02",
+      "tags": [
+        "보존",
+        "인용",
+        "핵심"
+      ],
+      "note": "직접 인용 2건 + 인명. 인용문 내부는 글자 단위 보존",
+      "ok": true,
+      "metrics": {
+        "inputS1": 3,
+        "inputS2": 0,
+        "residualS1": 0,
+        "residualS2": 0,
+        "changeRate": 6.32,
+        "lengthRatio": 0.993,
+        "overPolishSignals": [],
+        "preservationIssues": [],
+        "completionWarnings": [],
+        "responseWarnings": [],
+        "register": {
+          "original": "plain",
+          "revised": "plain",
+          "expected": "plain",
+          "ok": true
+        },
+        "changeQuality": {
+          "count": 2,
+          "displaySafe": true,
+          "unsafeSnippetCount": 0,
+          "fallbackReasonCount": 0,
+          "emptyReasonCount": 0,
+          "nonKoreanReasonCount": 0,
+          "noopChangeCount": 0,
+          "overflowNote": false,
+          "textChangedWithoutChanges": false
+        },
+        "expectations": [
+          {
+            "name": "보존 대상 유지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "완성도",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "격식 유지",
+            "passed": true,
+            "detail": "기대 plain / 결과 plain (원문 plain)"
+          },
+          {
+            "name": "변경 목록 표시 가능",
+            "passed": true,
+            "detail": "비표시 스니펫 0건"
+          },
+          {
+            "name": "변경 사유 존재",
+            "passed": true,
+            "detail": "대체 사유 0건, 빈 사유 0건"
+          },
+          {
+            "name": "유지: \"내년 상반기까지 해외 매출 비중을 30%로 끌어올리겠다\"",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: \"진입 장벽은 높지만 충성도가 높은 시장\"",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 박지현 대표",
+            "passed": true,
+            "detail": "원문 1회 / 결과 2회"
+          },
+          {
+            "name": "유지: 일본 시장",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "제거: 에 대해",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: [을를] 통해",
+            "passed": true,
+            "detail": ""
+          }
+        ],
+        "expectationsPassed": 11,
+        "expectationsTotal": 11,
+        "latencyMs": 28375,
+        "inputTokens": 17888,
+        "outputTokens": 2948,
+        "pipeline": {
+          "stages": [
+            "prepare",
+            "rewrite",
+            "style_gate",
+            "audit",
+            "finalize"
+          ],
+          "durationsMs": {
+            "prepare": 0,
+            "rewrite": 20175,
+            "style_gate": 0,
+            "audit": 4144,
+            "finalize": 4048
+          },
+          "chunkCount": 1,
+          "styleGateRounds": 0,
+          "styleGateImplementation": "style_repair",
+          "auditStatus": "full_pass",
+          "auditFlaggedEdits": 0,
+          "reviewRan": false,
+          "reviewImplementation": null,
+          "failedStage": null,
+          "styleGateInitialScore": 0.0,
+          "styleGateFinalScore": 0.0,
+          "unexplainedChanges": 0,
+          "explainedChanges": 2,
+          "explainFailed": false
+        },
+        "judge": {
+          "naturalness": 5,
+          "aiTell": 4,
+          "meaning": 4,
+          "overEdit": 4,
+          "reasonQuality": 4,
+          "registerFit": 5,
+          "overall": 4,
+          "issues": [
+            "'일본 시장에 대해'를 '일본 시장을'로 바꿔 문장 의미가 약간 어색해짐",
+            "직접 인용문은 잘 보존됨",
+            "대명사 치환은 자연스러움"
+          ]
+        }
+      },
+      "revisedText": "박지현 대표는 간담회에서 \"내년 상반기까지 해외 매출 비중을 30%로 끌어올리겠다\"라고 밝혔다. 박지현 대표는 일본 시장을 \"진입 장벽은 높지만 충성도가 높은 시장\"이라고 평가했다. 이번 발표로 회사의 글로벌 전략 방향을 확인할 수 있었다.",
+      "changes": [
+        {
+          "original": "밝혔다. 그는 일본 시장에 대해 \"진입 장벽은 높지만",
+          "revised": "밝혔다. 박지현 대표는 일본 시장을 \"진입 장벽은 높지만",
+          "reason": "'그는'을 '박지현 대표는'으로 바꿔 주어를 분명히 하고, 'about'을 직역한 '~에 대해'는 목적격 조사 '을'로 바로 이었습니다.",
+          "type": "clarity",
+          "riskLevel": "low"
+        },
+        {
+          "original": "평가했다. 이번 발표를 통해 회사의 글로벌 전략",
+          "revised": "평가했다. 이번 발표로 회사의 글로벌 전략",
+          "reason": "'이번 발표를 통해'는 through를 직역한 듯한 표현이라 수단을 나타내는 조사 '로'를 붙여 '이번 발표로'로 짧게 줄였습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        }
+      ],
+      "summary": [
+        "대명사 '그'를 '박지현 대표'로 바꿔 누구의 평가인지 분명히 했습니다.",
+        "'~에 대해', '~를 통해' 같은 직역 투 표현을 조사 '을', '로'로 바꿔 문장을 간결하게 했습니다.",
+        "해라체 어미와 인용문은 그대로 유지했습니다."
+      ],
+      "warnings": []
+    },
+    {
+      "id": "tone-01",
+      "tags": [
+        "격식체",
+        "핵심"
+      ],
+      "note": "합쇼체 공문. register 유지하며 번역투만 정리",
+      "ok": true,
+      "metrics": {
+        "inputS1": 2,
+        "inputS2": 1,
+        "residualS1": 0,
+        "residualS2": 1,
+        "changeRate": 10.74,
+        "lengthRatio": 0.91,
+        "overPolishSignals": [],
+        "preservationIssues": [],
+        "completionWarnings": [],
+        "responseWarnings": [],
+        "register": {
+          "original": "formal",
+          "revised": "formal",
+          "expected": "formal",
+          "ok": true
+        },
+        "changeQuality": {
+          "count": 3,
+          "displaySafe": true,
+          "unsafeSnippetCount": 0,
+          "fallbackReasonCount": 0,
+          "emptyReasonCount": 0,
+          "nonKoreanReasonCount": 0,
+          "noopChangeCount": 0,
+          "overflowNote": false,
+          "textChangedWithoutChanges": false
+        },
+        "expectations": [
+          {
+            "name": "보존 대상 유지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "완성도",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "격식 유지",
+            "passed": true,
+            "detail": "기대 formal / 결과 formal (원문 formal)"
+          },
+          {
+            "name": "변경 목록 표시 가능",
+            "passed": true,
+            "detail": "비표시 스니펫 0건"
+          },
+          {
+            "name": "변경 사유 존재",
+            "passed": true,
+            "detail": "대체 사유 0건, 빈 사유 0건"
+          },
+          {
+            "name": "유지: 다음 달 1일",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 총무팀",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "제거: 에 대해",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: [을를] 통해",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 관련하여",
+            "passed": true,
+            "detail": ""
+          }
+        ],
+        "expectationsPassed": 10,
+        "expectationsTotal": 10,
+        "latencyMs": 25291,
+        "inputTokens": 18143,
+        "outputTokens": 2735,
+        "pipeline": {
+          "stages": [
+            "prepare",
+            "rewrite",
+            "style_gate",
+            "audit",
+            "finalize"
+          ],
+          "durationsMs": {
+            "prepare": 0,
+            "rewrite": 16457,
+            "style_gate": 0,
+            "audit": 3355,
+            "finalize": 5472
+          },
+          "chunkCount": 1,
+          "styleGateRounds": 0,
+          "styleGateImplementation": "style_repair",
+          "auditStatus": "full_pass",
+          "auditFlaggedEdits": 0,
+          "reviewRan": false,
+          "reviewImplementation": null,
+          "failedStage": null,
+          "styleGateInitialScore": 2.0,
+          "styleGateFinalScore": 2.0,
+          "unexplainedChanges": 0,
+          "explainedChanges": 3,
+          "explainFailed": false
+        },
+        "judge": {
+          "naturalness": 5,
+          "aiTell": 4,
+          "meaning": 5,
+          "overEdit": 5,
+          "reasonQuality": 5,
+          "registerFit": 5,
+          "overall": 5,
+          "issues": [
+            "'본 안내문은'은 다소 관행적 표현"
+          ]
+        }
+      },
+      "revisedText": "본 안내문은 사옥 출입 절차 변경을 안내하기 위해 작성되었습니다. 다음 달 1일부터 전 임직원은 신규 출입증으로 출입하셔야 합니다. 기존 출입증은 이번 달 말일까지 사용하실 수 있습니다. 출입증 교체 관련 문의가 있으시면 총무팀으로 연락 주시기 바랍니다.",
+      "changes": [
+        {
+          "original": "안내문은 사옥 출입 절차 변경에 대해 알려드리기 위해 작성되었습니다.",
+          "revised": "안내문은 사옥 출입 절차 변경을 안내하기 위해 작성되었습니다.",
+          "reason": "'변경에 대해 알려드리기 위해'는 영어 about을 옮긴 투라서, 목적어를 바로 받는 '변경을 안내하기 위해'로 바꿨습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": "전 임직원은 신규 출입증을 통해 출입하셔야 합니다. 기존",
+          "revised": "전 임직원은 신규 출입증으로 출입하셔야 합니다. 기존",
+          "reason": "수단을 나타내는 '신규 출입증을 통해'가 길어서 조사 '으로'를 붙여 '신규 출입증으로'로 줄였습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "수 있습니다. 출입증 교체와 관련하여 문의 사항이 있으신 경우 총무팀으로 연락 주시기",
+          "revised": "수 있습니다. 출입증 교체 관련 문의가 있으시면 총무팀으로 연락 주시기",
+          "reason": "'교체와 관련하여 문의 사항이 있으신 경우'를 '교체 관련 문의가 있으시면'으로 줄이고, '경우' 구문을 '~시면'으로 바꿨습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        }
+      ],
+      "summary": [
+        "'~에 대해', '~을 통해' 같은 직역투 표현을 목적격 조사나 '으로'로 바꿨습니다.",
+        "'와 관련하여', '있으신 경우'처럼 늘어진 구문을 짧게 줄였습니다.",
+        "합쇼체 어조와 안내문의 격식은 그대로 유지했습니다."
+      ],
+      "warnings": []
+    },
+    {
+      "id": "tone-04",
+      "tags": [
+        "톤변환",
+        "핵심"
+      ],
+      "note": "tone=formal: 구어체를 격식체로",
+      "ok": true,
+      "metrics": {
+        "inputS1": 1,
+        "inputS2": 0,
+        "residualS1": 0,
+        "residualS2": 1,
+        "changeRate": 10.11,
+        "lengthRatio": 0.921,
+        "overPolishSignals": [],
+        "preservationIssues": [],
+        "completionWarnings": [],
+        "responseWarnings": [
+          "'좀' 삭제로 지연 정도의 한정 표현이 사라졌습니다.",
+          "'좀'(약간)이 삭제되어 지연의 정도를 한정하던 표현이 사라졌습니다. 지연 규모가 원문보다 크게 읽힐 수 있습니다."
+        ],
+        "register": {
+          "original": "haeyo",
+          "revised": "haeyo",
+          "expected": "formal",
+          "ok": false
+        },
+        "changeQuality": {
+          "count": 3,
+          "displaySafe": true,
+          "unsafeSnippetCount": 0,
+          "fallbackReasonCount": 0,
+          "emptyReasonCount": 0,
+          "nonKoreanReasonCount": 0,
+          "noopChangeCount": 0,
+          "overflowNote": false,
+          "textChangedWithoutChanges": false
+        },
+        "expectations": [
+          {
+            "name": "보존 대상 유지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "완성도",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "격식 유지",
+            "passed": false,
+            "detail": "기대 formal / 결과 haeyo (원문 haeyo)"
+          },
+          {
+            "name": "변경 목록 표시 가능",
+            "passed": true,
+            "detail": "비표시 스니펫 0건"
+          },
+          {
+            "name": "변경 사유 존재",
+            "passed": true,
+            "detail": "대체 사유 0건, 빈 사유 0건"
+          },
+          {
+            "name": "제거: 할게요|거예요|근데|같고요|알려드릴게요",
+            "passed": false,
+            "detail": "결과에 4회 잔존"
+          }
+        ],
+        "expectationsPassed": 4,
+        "expectationsTotal": 6,
+        "latencyMs": 34392,
+        "inputTokens": 17547,
+        "outputTokens": 4188,
+        "pipeline": {
+          "stages": [
+            "prepare",
+            "rewrite",
+            "style_gate",
+            "audit",
+            "finalize"
+          ],
+          "durationsMs": {
+            "prepare": 0,
+            "rewrite": 23093,
+            "style_gate": 0,
+            "audit": 5706,
+            "finalize": 5585
+          },
+          "chunkCount": 1,
+          "styleGateRounds": 0,
+          "styleGateImplementation": "style_repair",
+          "auditStatus": "conditional_pass",
+          "auditFlaggedEdits": 1,
+          "reviewRan": false,
+          "reviewImplementation": null,
+          "failedStage": null,
+          "styleGateInitialScore": 2.0,
+          "styleGateFinalScore": 2.0,
+          "unexplainedChanges": 1,
+          "explainedChanges": 3,
+          "explainFailed": false
+        },
+        "judge": {
+          "naturalness": 4,
+          "aiTell": 4,
+          "meaning": 4,
+          "overEdit": 4,
+          "reasonQuality": 5,
+          "registerFit": 3,
+          "overall": 4,
+          "issues": [
+            "첫 문장과 마지막 문장이 여전히 구어체입니다",
+            "격식체 요청인데 종결이 전반적으로 해요체에 머뭅니다",
+            "'좀' 삭제로 지연 정도가 원문보다 단정적으로 읽힐 수 있습니다"
+          ]
+        }
+      },
+      "revisedText": "프로젝트 일정 좀 정리해서 공유할게요. 디자인 시안은 이번 주까지 나올 것 같고요. 개발은 다음 주부터 들어갈 수 있을 거예요. 다만 서버 쪽 이슈가 아직 해결되지 않아 일정이 밀릴 수도 있어요. 확인되는 대로 다시 알려드릴게요.",
+      "changes": [
+        {
+          "original": "시안은 이번 주까지 나올 거 같고요, 개발은 다음 주부터",
+          "revised": "시안은 이번 주까지 나올 것 같고요. 개발은 다음 주부터",
+          "reason": "'나올 거 같고요'의 줄임말 '거'를 '것'으로 바로잡고, 쉼표로 이어진 두 절을 마침표로 끊어 읽기 쉽게 했습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": "들어갈 수 있을 거예요. 근데 서버 쪽 이슈가 아직",
+          "revised": "들어갈 수 있을 거예요. 다만 서버 쪽 이슈가 아직",
+          "reason": "문장 첫머리의 구어체 접속어 '근데'를 앞 내용과 대비를 알리는 '다만'으로 바꿔 글말에 맞는 격식을 갖췄습니다.",
+          "type": "tone",
+          "riskLevel": "low"
+        },
+        {
+          "original": "서버 쪽 이슈가 아직 해결이 안 돼서, 그것 때문에 일정이 좀 밀릴 수도 있어요.",
+          "revised": "서버 쪽 이슈가 아직 해결되지 않아 일정이 밀릴 수도 있어요.",
+          "reason": "'안 돼서, 그것 때문에'는 원인을 두 번 말하므로 '해결되지 않아'로 합치고 군더더기 '좀'도 뺐으나 완곡한 뉘앙스는 조금 줄 수 있습니다.",
+          "type": "concision",
+          "riskLevel": "medium"
+        }
+      ],
+      "summary": [
+        "구어체 표현인 '거 같고요', '근데'를 '것 같고요', '다만'으로 바꿔 격식 있는 말투로 맞췄습니다.",
+        "쉼표로 길게 이어진 문장을 마침표로 나눠 읽기 쉽게 정리했습니다.",
+        "원인을 중복해서 말하던 '안 돼서, 그것 때문에'를 '해결되지 않아'로 줄이고 '좀'을 삭제해 문장을 간결하게 했습니다."
+      ],
+      "warnings": [
+        "'좀' 삭제로 지연 정도의 한정 표현이 사라졌습니다.",
+        "'좀'(약간)이 삭제되어 지연의 정도를 한정하던 표현이 사라졌습니다. 지연 규모가 원문보다 크게 읽힐 수 있습니다."
+      ]
+    },
+    {
+      "id": "long-01",
+      "tags": [
+        "긴글",
+        "칼럼",
+        "핵심"
+      ],
+      "note": "4문단 칼럼. 번역투+관용구+피벗 종합. 문단 커버리지 유지 확인",
+      "ok": true,
+      "metrics": {
+        "inputS1": 10,
+        "inputS2": 20,
+        "residualS1": 0,
+        "residualS2": 3,
+        "changeRate": 16.0,
+        "lengthRatio": 0.835,
+        "overPolishSignals": [],
+        "preservationIssues": [],
+        "completionWarnings": [],
+        "responseWarnings": [],
+        "register": {
+          "original": "plain",
+          "revised": "plain",
+          "expected": "plain",
+          "ok": true
+        },
+        "changeQuality": {
+          "count": 12,
+          "displaySafe": true,
+          "unsafeSnippetCount": 0,
+          "fallbackReasonCount": 0,
+          "emptyReasonCount": 0,
+          "nonKoreanReasonCount": 0,
+          "noopChangeCount": 0,
+          "overflowNote": true,
+          "textChangedWithoutChanges": false
+        },
+        "expectations": [
+          {
+            "name": "보존 대상 유지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "완성도",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "격식 유지",
+            "passed": true,
+            "detail": "기대 plain / 결과 plain (원문 plain)"
+          },
+          {
+            "name": "변경 목록 표시 가능",
+            "passed": true,
+            "detail": "비표시 스니펫 0건"
+          },
+          {
+            "name": "변경 사유 존재",
+            "passed": true,
+            "detail": "대체 사유 0건, 빈 사유 0건"
+          },
+          {
+            "name": "제거: 시사하는 바가 크다",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 결론적으로",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 지금이야말로",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 검증되어지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 에 의해",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "최대 1회: 에 대해",
+            "passed": true,
+            "detail": "결과 0회"
+          },
+          {
+            "name": "최대 1회: [을를] 통해",
+            "passed": true,
+            "detail": "결과 0회"
+          },
+          {
+            "name": "최대 1회: (?<![가-힣])이는(?![가-힣])",
+            "passed": true,
+            "detail": "결과 0회"
+          },
+          {
+            "name": "문단 4개",
+            "passed": true,
+            "detail": "결과 4개"
+          }
+        ],
+        "expectationsPassed": 14,
+        "expectationsTotal": 14,
+        "latencyMs": 113111,
+        "inputTokens": 31223,
+        "outputTokens": 14979,
+        "pipeline": {
+          "stages": [
+            "prepare",
+            "rewrite",
+            "style_gate",
+            "audit",
+            "review",
+            "finalize"
+          ],
+          "durationsMs": {
+            "prepare": 1,
+            "rewrite": 37789,
+            "style_gate": 41253,
+            "audit": 7789,
+            "review": 1292,
+            "finalize": 24977
+          },
+          "chunkCount": 1,
+          "styleGateRounds": 1,
+          "styleGateImplementation": "style_repair",
+          "auditStatus": "conditional_pass",
+          "auditFlaggedEdits": 3,
+          "reviewRan": true,
+          "reviewImplementation": "review_segments",
+          "failedStage": null,
+          "styleGateInitialScore": 18.0,
+          "styleGateFinalScore": 2.0,
+          "unexplainedChanges": 6,
+          "explainedChanges": 12,
+          "explainFailed": false
+        },
+        "judge": {
+          "naturalness": 4,
+          "aiTell": 3,
+          "meaning": 3,
+          "overEdit": 3,
+          "reasonQuality": 4,
+          "registerFit": 3,
+          "overall": 3,
+          "issues": [
+            "현재형 평서로 바꾸며 칼럼의 시점·톤이 달라짐",
+            "마지막 문단의 강조가 약해짐",
+            "'양쪽 모두'를 '양측의 주장'으로 바꿔 원문의 균형감이 다소 달라짐",
+            "문단은 유지했지만 일부 문장의 함의가 축소됨",
+            "여전히 '즉' 같은 설명형 연결이 남음"
+          ]
+        }
+      },
+      "revisedText": "생성형 AI의 확산은 기업 교육의 풍경을 빠르게 바꾼다. 지난해까지만 해도 AI 교육을 회의적으로 보던 기업들이 올해 들어 앞다투어 사내 교육 프로그램을 도입한다. 기술의 발전이 조직 학습의 방식 자체에 근본적인 질문을 던진다.\n\n교육 담당자들은 새로운 고민을 한다. 기존의 집합 교육에서 전달하던 지식은 이제 AI로 즉시 얻을 수 있다. 교육의 역할은 지식 전달에서 판단력 훈련으로 이동해야 한다. 즉 무엇을 아는가에서 무엇을 물을 수 있는가로 역량의 기준이 바뀌고 있는 것이다.\n\n물론 우려의 목소리도 존재한다. AI가 생성한 교육 콘텐츠의 품질은 아직 검증되지 않았고 학습자의 의존도가 높아질 수 있다는 지적도 있다. 양측의 주장이 일리가 있어 도입 속도를 조절할 필요가 있어 보인다.\n\n중요한 것은 도구가 아니라 방향이다. 교육의 목적을 다시 정의하고 목적에 맞는 활용 방식을 설계해야 한다. 교육 담당자들이 주도권을 가져야 한다.",
+      "changes": [
+        {
+          "original": "교육의 풍경을 빠르게 바꾸고 있다. 지난해까지만 해도 AI",
+          "revised": "교육의 풍경을 빠르게 바꾼다. 지난해까지만 해도 AI",
+          "reason": "'바꾸고 있다'의 진행 표현을 '바꾼다'로 줄여 문장을 간결하게 했습니다.",
+          "type": "grammar",
+          "riskLevel": "medium"
+        },
+        {
+          "original": " 지난해까지만 해도 AI 교육에 대해 회의적이었던 기업들이 올해 들어",
+          "revised": " 지난해까지만 해도 AI 교육을 회의적으로 보던 기업들이 올해 들어",
+          "reason": "'AI 교육에 대해 회의적이었던'은 직역투라 'AI 교육을 회의적으로 보던'으로 풀어 썼습니다.",
+          "type": "clarity",
+          "riskLevel": "low"
+        },
+        {
+          "original": "사내 교육 프로그램을 도입하고 있다. 이러한 변화는 시사하는 바가 크다. 기술의 발전이 조직",
+          "revised": "사내 교육 프로그램을 도입한다. 기술의 발전이 조직",
+          "reason": "'도입하고 있다'를 '도입한다'로 줄이고, 내용 없이 뒤 문장을 예고하던 '이러한 변화는 시사하는 바가 크다'를 삭제했습니다.",
+          "type": "meaning",
+          "riskLevel": "medium"
+        },
+        {
+          "original": "조직 학습의 방식 자체에 대해 근본적인 질문을",
+          "revised": "조직 학습의 방식 자체에 근본적인 질문을",
+          "reason": "'방식 자체에 대해'에서 '대해'를 빼고 '자체에'로 바로 이어 군더더기를 줄였습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "근본적인 질문을 던지고 있는 것이다.\n\n교육 담당자들은 새로운",
+          "revised": "근본적인 질문을 던진다.\n\n교육 담당자들은 새로운",
+          "reason": "길게 늘어진 '던지고 있는 것이다'를 '던진다'로 바꿔 문장 끝을 짧게 맺었습니다.",
+          "type": "concision",
+          "riskLevel": "medium"
+        },
+        {
+          "original": "담당자들은 새로운 고민을 가지고 있다. 기존의 집합",
+          "revised": "담당자들은 새로운 고민을 한다. 기존의 집합",
+          "reason": "'고민을 가지고 있다'는 '가지다'를 쓴 직역투라 '고민을 한다'로 자연스럽게 바꿨습니다.",
+          "type": "clarity",
+          "riskLevel": "low"
+        },
+        {
+          "original": " 기존의 집합 교육을 통해 전달되던 지식은 이제",
+          "revised": " 기존의 집합 교육에서 전달하던 지식은 이제",
+          "reason": "'교육을 통해 전달되던'의 '통해'와 피동을 '교육에서 전달하던'이라는 능동 표현으로 풀었습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": "지식은 이제 AI를 통해 즉시 얻을 수 있다.",
+          "revised": "지식은 이제 AI로 즉시 얻을 수 있다.",
+          "reason": "수단을 나타내는 'AI를 통해'를 조사 'AI로'로 줄여 간결하게 했습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "즉시 얻을 수 있다. 이는 교육의 역할이 지식 전달에서 판단력",
+          "revised": "즉시 얻을 수 있다. 교육의 역할은 지식 전달에서 판단력",
+          "reason": "앞 문장을 받는 '이는'을 빼고 '교육의 역할은'으로 바로 시작해 주제를 곧장 드러냈습니다.",
+          "type": "structure",
+          "riskLevel": "medium"
+        },
+        {
+          "original": "판단력 훈련으로 이동해야 한다는 것을 의미한다. 즉 무엇을 아는가에서",
+          "revised": "판단력 훈련으로 이동해야 한다. 즉 무엇을 아는가에서",
+          "reason": "'이동해야 한다는 것을 의미한다'에서 '~는 것을 의미한다'를 걷어 내고 '이동해야 한다'로 끝냈습니다.",
+          "type": "concision",
+          "riskLevel": "medium"
+        },
+        {
+          "original": "목소리도 존재한다. AI에 의해 생성된 교육 콘텐츠의 품질은",
+          "revised": "목소리도 존재한다. AI가 생성한 교육 콘텐츠의 품질은",
+          "reason": "'AI에 의해 생성된'은 피동 직역투라 'AI가 생성한'이라는 능동 표현으로 바꿨습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": "콘텐츠의 품질은 아직 검증되어지지 않았고, 학습자의 의존도가 높아질",
+          "revised": "콘텐츠의 품질은 아직 검증되지 않았고 학습자의 의존도가 높아질",
+          "reason": "'검증되어지지'는 피동이 겹친 표현이라 '검증되지'로 고치고 '않았고' 뒤 쉼표도 뺐습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": "",
+          "revised": "",
+          "reason": "세부 변경 구간이 18건이라 주요 12건만 비교 표시에 사용했습니다.",
+          "type": "clarity",
+          "riskLevel": "low"
+        }
+      ],
+      "summary": [
+        "'~고 있다', '~고 있는 것이다' 같은 늘어진 서술을 짧은 현재형으로 줄였습니다.",
+        "'에 대해', '을 통해', '에 의해' 같은 직역투를 조사와 능동 표현으로 바꿨습니다.",
+        "'검증되어지지'의 겹친 피동을 바로잡고 불필요한 쉼표를 뺐습니다.",
+        "'이는 ~을 의미한다'식 풀이와 내용 없는 평가 문장을 덜어내 핵심 주장이 바로 드러나게 했습니다."
+      ],
+      "warnings": []
+    },
+    {
+      "id": "edge-02",
+      "tags": [
+        "엣지",
+        "깨끗한글",
+        "핵심"
+      ],
+      "note": "AI 티 거의 없는 글. 과윤문(불필요한 수정) 감지용 — 변경률이 낮아야 정상",
+      "ok": true,
+      "metrics": {
+        "inputS1": 0,
+        "inputS2": 2,
+        "residualS1": 0,
+        "residualS2": 0,
+        "changeRate": 0.62,
+        "lengthRatio": 0.988,
+        "overPolishSignals": [],
+        "preservationIssues": [],
+        "completionWarnings": [],
+        "responseWarnings": [
+          "The changes log lists an edit to '하지만,' that does not appear in original_text. This is a record mismatch only and does not affect the revised text."
+        ],
+        "register": {
+          "original": "formal",
+          "revised": "formal",
+          "expected": "formal",
+          "ok": true
+        },
+        "changeQuality": {
+          "count": 2,
+          "displaySafe": true,
+          "unsafeSnippetCount": 0,
+          "fallbackReasonCount": 0,
+          "emptyReasonCount": 0,
+          "nonKoreanReasonCount": 0,
+          "noopChangeCount": 0,
+          "overflowNote": false,
+          "textChangedWithoutChanges": false
+        },
+        "expectations": [
+          {
+            "name": "보존 대상 유지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "완성도",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "격식 유지",
+            "passed": true,
+            "detail": "기대 formal / 결과 formal (원문 formal)"
+          },
+          {
+            "name": "변경 목록 표시 가능",
+            "passed": true,
+            "detail": "비표시 스니펫 0건"
+          },
+          {
+            "name": "변경 사유 존재",
+            "passed": true,
+            "detail": "대체 사유 0건, 빈 사유 0건"
+          },
+          {
+            "name": "유지: 40분",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 30일 전",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "유지: 7일 전",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "변경률 ≤ 15%",
+            "passed": true,
+            "detail": "0.6%"
+          }
+        ],
+        "expectationsPassed": 9,
+        "expectationsTotal": 9,
+        "latencyMs": 25649,
+        "inputTokens": 17197,
+        "outputTokens": 2578,
+        "pipeline": {
+          "stages": [
+            "prepare",
+            "rewrite",
+            "style_gate",
+            "audit",
+            "finalize"
+          ],
+          "durationsMs": {
+            "prepare": 0,
+            "rewrite": 16242,
+            "style_gate": 0,
+            "audit": 5652,
+            "finalize": 3748
+          },
+          "chunkCount": 1,
+          "styleGateRounds": 0,
+          "styleGateImplementation": "style_repair",
+          "auditStatus": "full_pass",
+          "auditFlaggedEdits": 0,
+          "reviewRan": false,
+          "reviewImplementation": null,
+          "failedStage": null,
+          "styleGateInitialScore": 0.0,
+          "styleGateFinalScore": 0.0,
+          "unexplainedChanges": 1,
+          "explainedChanges": 2,
+          "explainFailed": false
+        },
+        "judge": {
+          "naturalness": 5,
+          "aiTell": 5,
+          "meaning": 5,
+          "overEdit": 4,
+          "reasonQuality": 3,
+          "registerFit": 5,
+          "overall": 4,
+          "issues": [
+            "변경이 쉼표 삭제뿐이라 효용이 작음",
+            "changes 로그에 원문 불일치 경고가 있음"
+          ]
+        }
+      },
+      "revisedText": "지난주 장애 원인을 공유합니다. 결제 서버의 인증서가 만료되면서 외부 결제 요청이 실패했습니다. 모니터링 알림은 정상 동작했지만 담당자 부재로 대응이 40분 늦었습니다. 재발 방지 대책으로 인증서 만료 알림을 만료 30일 전과 7일 전 두 차례로 늘렸고 야간 당직 체계도 정비했습니다.",
+      "changes": [
+        {
+          "original": " 모니터링 알림은 정상 동작했지만, 담당자 부재로 대응이",
+          "revised": " 모니터링 알림은 정상 동작했지만 담당자 부재로 대응이",
+          "reason": "'정상 동작했지만' 뒤의 쉼표는 없어도 대조 관계가 분명해서 지우고 '담당자 부재로'와 바로 이었습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        },
+        {
+          "original": "전과 7일 전 두 차례로 늘렸고, 야간 당직 체계도",
+          "revised": "전과 7일 전 두 차례로 늘렸고 야간 당직 체계도",
+          "reason": "'늘렸고' 뒤 쉼표는 두 동작을 나열하는 흐름을 끊어서 삭제하고 '야간 당직 체계도'로 자연스럽게 연결했습니다.",
+          "type": "grammar",
+          "riskLevel": "low"
+        }
+      ],
+      "summary": [
+        "연결어미 '~지만', '~고' 뒤에 붙은 불필요한 쉼표를 두 군데에서 삭제했습니다.",
+        "어휘와 문장 구조, 합쇼체 말투는 그대로 두고 문장 호흡만 정리했습니다."
+      ],
+      "warnings": [
+        "The changes log lists an edit to '하지만,' that does not appear in original_text. This is a record mismatch only and does not affect the revised text."
+      ]
+    },
+    {
+      "id": "unreg-01",
+      "tags": [
+        "AI관용구",
+        "미탐지룰",
+        "핵심"
+      ],
+      "note": "정규식이 없는 룰: 첫째/둘째/셋째 열거(C-1), 정도부사(F-1), 추상명사+필요하다(I-5)",
+      "ok": true,
+      "metrics": {
+        "inputS1": 3,
+        "inputS2": 5,
+        "residualS1": 0,
+        "residualS2": 2,
+        "changeRate": 18.05,
+        "lengthRatio": 0.887,
+        "overPolishSignals": [],
+        "preservationIssues": [],
+        "completionWarnings": [],
+        "responseWarnings": [],
+        "register": {
+          "original": "plain",
+          "revised": "plain",
+          "expected": "plain",
+          "ok": true
+        },
+        "changeQuality": {
+          "count": 6,
+          "displaySafe": true,
+          "unsafeSnippetCount": 0,
+          "fallbackReasonCount": 0,
+          "emptyReasonCount": 0,
+          "nonKoreanReasonCount": 0,
+          "noopChangeCount": 0,
+          "overflowNote": false,
+          "textChangedWithoutChanges": false
+        },
+        "expectations": [
+          {
+            "name": "보존 대상 유지",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "완성도",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "격식 유지",
+            "passed": true,
+            "detail": "기대 plain / 결과 plain (원문 plain)"
+          },
+          {
+            "name": "변경 목록 표시 가능",
+            "passed": true,
+            "detail": "비표시 스니펫 0건"
+          },
+          {
+            "name": "변경 사유 존재",
+            "passed": true,
+            "detail": "대체 사유 0건, 빈 사유 0건"
+          },
+          {
+            "name": "유지: 3월",
+            "passed": true,
+            "detail": "원문 1회 / 결과 1회"
+          },
+          {
+            "name": "제거: 첫째|둘째|셋째",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "제거: 매우|정말|대단히",
+            "passed": true,
+            "detail": ""
+          },
+          {
+            "name": "최대 1회: 필요하다|필요합니다",
+            "passed": true,
+            "detail": "결과 1회"
+          }
+        ],
+        "expectationsPassed": 9,
+        "expectationsTotal": 9,
+        "latencyMs": 52432,
+        "inputTokens": 20056,
+        "outputTokens": 6243,
+        "pipeline": {
+          "stages": [
+            "prepare",
+            "rewrite",
+            "style_gate",
+            "audit",
+            "review",
+            "finalize"
+          ],
+          "durationsMs": {
+            "prepare": 0,
+            "rewrite": 24933,
+            "style_gate": 0,
+            "audit": 6498,
+            "review": 1567,
+            "finalize": 19424
+          },
+          "chunkCount": 1,
+          "styleGateRounds": 0,
+          "styleGateImplementation": "style_repair",
+          "auditStatus": "conditional_pass",
+          "auditFlaggedEdits": 1,
+          "reviewRan": true,
+          "reviewImplementation": "review_segments",
+          "failedStage": null,
+          "styleGateInitialScore": 4.0,
+          "styleGateFinalScore": 4.0,
+          "unexplainedChanges": 2,
+          "explainedChanges": 6,
+          "explainFailed": false
+        },
+        "judge": {
+          "naturalness": 3,
+          "aiTell": 3,
+          "meaning": 2,
+          "overEdit": 2,
+          "reasonQuality": 3,
+          "registerFit": 3,
+          "overall": 2,
+          "issues": [
+            "세 가지 열거를 둘만 표시해 구조가 어색함",
+            "둘째 항목을 첫째와 합쳐 의미 구조가 달라짐",
+            "'정말 중요한'을 '핵심'으로 바꿔 뉘앙스가 달라짐",
+            "불필요하게 원래 자연스러운 열거 표현을 흔듦"
+          ]
+        }
+      },
+      "revisedText": "이번 개편의 목표는 세 가지다. 우선 복잡한 승인 단계를 줄이고 대시보드에는 핵심 지표만 남긴다. 마지막으로 부서 간 소통 방식을 바꾼다. 이를 위해 근본적인 혁신이 필요하다. 어려운 일이지만 3월까지 첫 결과를 내야 한다.",
+      "changes": [
+        {
+          "original": "목표는 세 가지다. 첫째, 매우 복잡한 승인 단계를",
+          "revised": "목표는 세 가지다. 우선 복잡한 승인 단계를",
+          "reason": "'첫째, 매우 복잡한'에서 순서어를 '우선'으로 바꾸고 강조 부사 '매우'를 덜어 내 담백하게 만들었습니다.",
+          "type": "concision",
+          "riskLevel": "medium"
+        },
+        {
+          "original": "복잡한 승인 단계를 줄인다. 둘째, 정말 중요한 지표만",
+          "revised": "복잡한 승인 단계를 줄이고 대시보드에는 핵심 지표만",
+          "reason": "'줄인다. 둘째'로 끊긴 두 항목을 '줄이고'로 이어 한 문장으로 묶고, '정말 중요한'은 '핵심'으로 줄였습니다.",
+          "type": "structure",
+          "riskLevel": "medium"
+        },
+        {
+          "original": "지표만 대시보드에 남긴다.",
+          "revised": "지표만 남긴다.",
+          "reason": "앞 구절에 '대시보드에는'이 이미 들어가 같은 말이 겹치지 않도록 이 문장에서는 '대시보드에'를 뺐습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "남긴다. 셋째, 부서 간 소통 방식을",
+          "revised": "남긴다. 마지막으로 부서 간 소통 방식을",
+          "reason": "'셋째'를 '마지막으로'로 바꿔 앞의 '우선'과 짝이 되게 하고 항목이 끝난다는 흐름을 드러냈습니다.",
+          "type": "structure",
+          "riskLevel": "low"
+        },
+        {
+          "original": "방식을 바꾼다. 이를 위해서는 근본적인 혁신이 필요하다",
+          "revised": "방식을 바꾼다. 이를 위해 근본적인 혁신이 필요하다",
+          "reason": "'이를 위해서는'의 '서는'을 덜어 '이를 위해'로 줄여, 군더더기 없이 목적을 바로 잇게 했습니다.",
+          "type": "concision",
+          "riskLevel": "low"
+        },
+        {
+          "original": "근본적인 혁신이 필요하다. 대단히 어려운 일이지만 3월까지",
+          "revised": "근본적인 혁신이 필요하다. 어려운 일이지만 3월까지",
+          "reason": "'대단히'는 어려움을 지나치게 부각하는 정도 부사라 삭제해 '어려운 일이지만'으로 담담하게 썼습니다.",
+          "type": "concision",
+          "riskLevel": "medium"
+        }
+      ],
+      "summary": [
+        "'첫째·둘째·셋째'로 나열하던 항목을 '우선', '마지막으로'로 바꾸고 앞의 두 항목을 한 문장으로 묶었습니다.",
+        "'매우', '정말 중요한', '대단히' 같은 강조 표현을 줄이거나 '핵심'으로 바꿔 문장을 간결하게 했습니다.",
+        "'이를 위해서는'을 '이를 위해'로 줄이고 겹치는 '대시보드'를 한 번만 쓰도록 정리했습니다."
+      ],
+      "warnings": []
+    }
+  ]
+}

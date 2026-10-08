@@ -540,7 +540,7 @@ class RewriteGraphRunner:
                         llm_result,
                         audit_result,
                         start_text=spliced_text,
-                        extra_warnings=[*model_result.warnings, *unresolved_note],
+                        extra_warnings=unresolved_note,
                         model_handled_edits=handled,
                     )
             else:
@@ -586,6 +586,8 @@ class RewriteGraphRunner:
                 "changes_count": len(review_result.changes),
                 "summary_count": len(review_result.summary),
                 "warnings_count": len(review_result.warnings),
+                "model_warnings_count": len(model_result.warnings) if model_result else 0,
+                "model_warnings": list(model_result.warnings) if model_result else [],
                 "final_warnings_count": len(review_result.finalAuditWarnings),
                 "blocking_issues_count": len(review_result.finalBlockingIssues),
                 "input_tokens": review_result.inputTokens,
@@ -607,9 +609,14 @@ class RewriteGraphRunner:
             warnings = list(state.get("warnings", []))
             audit_result = state.get("audit_result")
             review_result = state.get("review_result")
+            # Response warnings are user-facing. Model audit prose (free-text
+            # warnings, advisory flagged-edit issues) is raw model output in an
+            # unpredictable register and sometimes wrong, so it stays in the
+            # debug log; only completion problems and code-generated repair
+            # notes reach the user. Per-change risk is already carried by
+            # changes[].riskLevel / type from the explain step.
             if audit_result and not review_result:
-                warnings.extend(audit_result.warnings)
-                warnings.extend(edit.issue for edit in audit_result.flaggedEdits if edit.issue)
+                warnings.extend(warning for warning in audit_result.warnings if _is_completion_warning(warning))
             if review_result:
                 warnings.extend(review_result.warnings)
                 warnings.extend(review_result.finalAuditWarnings)
