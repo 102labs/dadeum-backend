@@ -5,10 +5,16 @@ from typing import Any, Protocol, TypeVar
 from humanize_core.diff import build_fallback_changes, squeeze_spaces
 from humanize_core.im_not_ai import prompts
 from humanize_core.im_not_ai.schemas import (
+    AuditOutput,
     AuditResult,
-    RewriteResult,
+    ChangeExplanationOutput,
+    ChangeExplanationResult,
     HumanizeContext,
-    StrictReviewResult,
+    ReviewSegment,
+    RewriteOutput,
+    RewriteResult,
+    SegmentReviewOutput,
+    SegmentReviewResult,
 )
 from humanize_core.schemas import LLMRewriteResult, RewriteRequest
 
@@ -142,11 +148,12 @@ class AnthropicRewriteLLM:
         return _llm_result_to_rewrite_result(result)
 
 
-TStructuredResult = TypeVar(
-    "TStructuredResult",
-    RewriteResult,
-    AuditResult,
-    StrictReviewResult,
+TStructuredOutput = TypeVar(
+    "TStructuredOutput",
+    RewriteOutput,
+    AuditOutput,
+    SegmentReviewOutput,
+    ChangeExplanationOutput,
 )
 
 
@@ -163,6 +170,7 @@ class OpenRouterRewriteLLM:
         rewrite_fallback_model_name: str,
         strict_audit_model_name: str,
         strict_review_model_name: str,
+        explain_model_name: str | None = None,
     ) -> None:
         if not api_key:
             raise LLMConfigurationError("OPENROUTER_API_KEY is required for OpenRouter provider")
@@ -174,6 +182,7 @@ class OpenRouterRewriteLLM:
         self.rewrite_models = _dedupe_models([primary_model, rewrite_fallback_model_name])
         self.audit_models = _dedupe_models([strict_audit_model_name, primary_model])
         self.review_models = _dedupe_models([strict_review_model_name, primary_model])
+        self.explain_models = _dedupe_models([explain_model_name or "", primary_model])
 
     async def rewrite(self, request: RewriteRequest) -> LLMRewriteResult:
         rewrite_result = await self.rewrite_once(
@@ -187,14 +196,15 @@ class OpenRouterRewriteLLM:
         request: RewriteRequest,
         context: dict[str, Any],
     ) -> RewriteResult:
-        return await self._chat_structured(
+        output, input_tokens, output_tokens = await self._chat_structured(
             models=self.rewrite_models,
             schema_name="rewrite_result",
-            result_type=RewriteResult,
+            output_type=RewriteOutput,
             system=prompts.rewrite_system_prompt(),
             user=prompts.rewrite_user_prompt(request, context),
             max_tokens=MAX_OUTPUT_TOKENS,
         )
+        return _rewrite_output_to_result(output, input_tokens, output_tokens)
 
     async def style_repair(
         self,
@@ -203,10 +213,10 @@ class OpenRouterRewriteLLM:
         residual_hints: list[dict[str, Any]],
         smooth_transitions: bool,
     ) -> RewriteResult:
-        return await self._chat_structured(
+        output, input_tokens, output_tokens = await self._chat_structured(
             models=self.rewrite_models,
             schema_name="style_repair_result",
-            result_type=RewriteResult,
+            output_type=RewriteOutput,
             system=prompts.style_repair_system_prompt(),
             user=prompts.style_repair_user_prompt(
                 request,
@@ -216,6 +226,7 @@ class OpenRouterRewriteLLM:
             ),
             max_tokens=MAX_OUTPUT_TOKENS,
         )
+        return _rewrite_output_to_result(output, input_tokens, output_tokens)
 
     async def audit(
         self,
@@ -224,34 +235,61 @@ class OpenRouterRewriteLLM:
         revised_text: str,
         changes: list[dict[str, Any]],
     ) -> AuditResult:
-        return await self._chat_structured(
+        output, input_tokens, output_tokens = await self._chat_structured(
             models=self.audit_models,
             schema_name="audit_result",
-            result_type=AuditResult,
+            output_type=AuditOutput,
             system=prompts.audit_system_prompt(),
             user=prompts.audit_user_prompt(request, context, revised_text, changes),
             max_tokens=MAX_OUTPUT_TOKENS,
         )
+        return AuditResult(
+            status=output.status,
+            reason=output.reason,
+            warnings=output.warnings,
+            flaggedEdits=output.flaggedEdits,
+            inputTokens=input_tokens,
+            outputTokens=output_tokens,
+        )
 
-    async def review(
+    async def review_segments(
         self,
         request: RewriteRequest,
-        context: dict[str, Any],
-        revised_text: str,
+        segments: list[ReviewSegment],
         audit_result: AuditResult,
-    ) -> StrictReviewResult:
-        return await self._chat_structured(
+    ) -> SegmentReviewResult:
+        output, input_tokens, output_tokens = await self._chat_structured(
             models=self.review_models,
-            schema_name="preservation_review_result",
-            result_type=StrictReviewResult,
+            schema_name="segment_review_result",
+            output_type=SegmentReviewOutput,
             system=prompts.review_system_prompt(),
-            user=prompts.review_user_prompt(
-                request,
-                context,
-                revised_text,
-                audit_result,
-            ),
+            user=prompts.review_user_prompt(request, segments, audit_result),
             max_tokens=MAX_OUTPUT_TOKENS,
+        )
+        return SegmentReviewResult(
+            **output.model_dump(),
+            inputTokens=input_tokens,
+            outputTokens=output_tokens,
+        )
+
+    async def explain_changes(
+        self,
+        request: RewriteRequest,
+        revised_text: str,
+        items: list[dict[str, Any]],
+    ) -> ChangeExplanationResult:
+        output, input_tokens, output_tokens = await self._chat_structured(
+            models=self.explain_models,
+            schema_name="change_explanations",
+            output_type=ChangeExplanationOutput,
+            system=prompts.explain_changes_system_prompt(),
+            user=prompts.explain_changes_user_prompt(request, revised_text, items),
+            max_tokens=MAX_OUTPUT_TOKENS,
+        )
+        return ChangeExplanationResult(
+            **output.model_dump(),
+            inputTokens=input_tokens,
+            outputTokens=output_tokens,
         )
 
     async def _chat_structured(
@@ -259,11 +297,11 @@ class OpenRouterRewriteLLM:
         *,
         models: list[str],
         schema_name: str,
-        result_type: type[TStructuredResult],
+        output_type: type[TStructuredOutput],
         system: str,
         user: str,
         max_tokens: int,
-    ) -> TStructuredResult:
+    ) -> tuple[TStructuredOutput, int, int]:
         from openai import AsyncOpenAI
 
         headers = {"X-Title": self.app_title}
@@ -285,15 +323,13 @@ class OpenRouterRewriteLLM:
                         user=user,
                         max_tokens=max_tokens,
                         schema_name=schema_name,
-                        schema=result_type.model_json_schema(),
+                        schema=output_type.model_json_schema(),
                     )
                 )
                 content = _extract_chat_content(response)
-                result = result_type.model_validate_json(content)
+                result = output_type.model_validate_json(content)
                 input_tokens, output_tokens = _extract_chat_usage(response)
-                return result.model_copy(
-                    update={"inputTokens": input_tokens, "outputTokens": output_tokens}
-                )
+                return result, input_tokens, output_tokens
             except Exception as exc:  # noqa: BLE001 - sanitize and try configured fallback model.
                 last_error = exc
         raise LLMResponseError("OpenRouter structured response failed") from last_error
@@ -315,6 +351,7 @@ def create_llm(
     rewrite_fallback_model_name: str = "~anthropic/claude-haiku-latest",
     strict_audit_model_name: str = "~anthropic/claude-haiku-latest",
     strict_review_model_name: str = "openai/gpt-5.4-mini",
+    explain_model_name: str | None = None,
 ) -> RewriteLLM:
     normalized = provider.lower().strip()
     if normalized == "stub":
@@ -334,8 +371,20 @@ def create_llm(
             rewrite_fallback_model_name=rewrite_fallback_model_name,
             strict_audit_model_name=strict_audit_model_name,
             strict_review_model_name=strict_review_model_name,
+            explain_model_name=explain_model_name,
         )
     raise LLMConfigurationError(f"Unsupported HUMANIZE_MODEL_PROVIDER: {provider}")
+
+
+def _rewrite_output_to_result(output: RewriteOutput, input_tokens: int, output_tokens: int) -> RewriteResult:
+    return RewriteResult(
+        revisedText=output.revisedText,
+        changes=output.changes,
+        summary=output.summary,
+        warnings=output.warnings,
+        inputTokens=input_tokens,
+        outputTokens=output_tokens,
+    )
 
 
 def _rewrite_result_to_llm_result(result: RewriteResult) -> LLMRewriteResult:
