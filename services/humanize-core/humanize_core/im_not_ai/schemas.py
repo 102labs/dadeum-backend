@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from humanize_core.schemas import Change
+from humanize_core.schemas import Change, ChangeType, RiskLevel
 
 
 Severity = Literal["S1", "S2", "S3"]
@@ -140,3 +140,80 @@ class HumanizeContext(BaseModel):
     severityWeightedScore: float = 0.0
     categorySummary: dict[str, int] = Field(default_factory=dict)
     rulebookHints: list[RulebookHint] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Model-facing output schemas. These are what the structured-output request
+# actually asks the model to produce: only the fields the graph consumes.
+# Internal bookkeeping (token usage, quality grades, residual findings) lives
+# on the *Result models above and is filled in by code, never by the model.
+
+
+class RewriteOutput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    revisedText: str
+    changes: list[Change]
+    summary: list[str]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AuditOutput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    status: AuditStatus
+    reason: str
+    warnings: list[str] = Field(default_factory=list)
+    flaggedEdits: list[FlaggedEdit] = Field(default_factory=list)
+
+
+class ReviewSegment(BaseModel):
+    """One draft sentence the audit flagged, with the corrections to apply."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    index: int
+    draft_sentence: str
+    original_sentence: str = ""
+    corrections: list[FlaggedEdit] = Field(default_factory=list)
+
+
+class RepairedSegment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    index: int
+    text: str
+
+
+class SegmentReviewOutput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    repairedSegments: list[RepairedSegment]
+    unresolved: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class SegmentReviewResult(SegmentReviewOutput):
+    inputTokens: int = 0
+    outputTokens: int = 0
+
+
+class ChangeExplanation(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    index: int
+    reason: str
+    type: ChangeType
+    riskLevel: RiskLevel
+
+
+class ChangeExplanationOutput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    items: list[ChangeExplanation]
+    summary: list[str] = Field(default_factory=list)
+
+
+class ChangeExplanationResult(ChangeExplanationOutput):
+    inputTokens: int = 0
+    outputTokens: int = 0

@@ -30,7 +30,11 @@ from humanize_core.im_not_ai.metrics_v2 import (
 )
 from humanize_core.im_not_ai.schemas import (
     AuditResult,
+    ChangeExplanationResult,
+    RepairedSegment,
+    RewriteOutput,
     RewriteResult,
+    SegmentReviewResult,
     StrictReviewResult,
 )
 from humanize_core.llm import (
@@ -660,51 +664,54 @@ def test_rewrite_prompt_runs_active_rulebook_single_pass():
     assert "룰북을 적극 적용" in payload["rewrite_guidance"]["rewrite_policy"]
     assert "fast mode" not in rendered_payload
     assert "20~40%" not in rendered_payload
-    assert all("changeRate" not in item for item in payload["must_report"])
+    assert "must_report" not in payload
+    assert any("룰 번호" in item for item in payload["changes_contract"])
+    assert any("40~80자" in item for item in payload["changes_contract"])
+    assert "summary_contract" in payload
+    assert "charCountAfter" not in rendered_payload
 
 
-def test_review_prompt_applies_audit_corrections_and_reaudits():
+def test_review_prompt_sends_only_flagged_segments():
+    from humanize_core.im_not_ai.schemas import FlaggedEdit, ReviewSegment
+
     request = RewriteRequestForTest.model_validate(
         _payload(
-            text="이 기능은 데이터를 통해 성장을 지원합니다.",
+            text="이 기능은 데이터를 통해 성장을 지원합니다. 출시는 2026년 5월입니다.",
             rewrite_mode="strict",
         )
     )
-    audit_result = AuditResult(
-        status="conditional_pass",
-        flaggedEdits=[
-            {
-                "before": "데이터를 통해",
-                "after": "데이터로",
-                "issue": "번역투 연결입니다.",
-                "checklistFailed": [13],
-                "action": "rewrite_required",
-                "correctionDirection": "'통해'를 자연스러운 조사로 줄입니다.",
-                "severity": "medium",
-            }
-        ],
-        reason="수정 지시가 있습니다.",
+    edit = FlaggedEdit(
+        before="2026년 5월",
+        after="내년 봄",
+        issue="날짜 표기가 바뀌었습니다.",
+        checklistFailed=[3],
+        action="preserve_exact",
+        correctionDirection="날짜를 원문 그대로 복원합니다.",
+        severity="high",
+    )
+    audit_result = AuditResult(status="conditional_pass", flaggedEdits=[edit], reason="수정 지시가 있습니다.")
+    segment = ReviewSegment(
+        index=1,
+        draft_sentence="출시는 내년 봄입니다.",
+        original_sentence="출시는 2026년 5월입니다.",
+        corrections=[edit],
     )
 
-    payload = json.loads(
-        prompts.review_user_prompt(
-            request,
-            _rulebook_context(),
-            "이 기능은 데이터를 통해 성장을 지원합니다.",
-            audit_result,
-        )
-    )
-
+    payload = json.loads(prompts.review_user_prompt(request, [segment], audit_result))
     rendered = json.dumps(payload, ensure_ascii=False)
+
     assert "strict" not in rendered.lower()
-    assert "preservation_audit" in payload
-    assert "fixed_review_routine" in payload
-    assert "original_detection" not in payload
-    assert "residual_detection" not in payload
-    assert "rewrite_priorities" not in payload
+    assert payload["segments"][0]["index"] == 1
+    assert payload["segments"][0]["draft_sentence"] == "출시는 내년 봄입니다."
+    assert payload["segments"][0]["corrections"][0]["before"] == "2026년 5월"
+    assert "exact_preserve_targets" in payload
+    assert "repair_routine" in payload
+    assert "repairedSegments" in rendered
+    # The review never sees the full draft: only flagged sentences travel.
+    assert "데이터를 통해 성장을 지원합니다" not in rendered
     assert "rulebook_hints" not in rendered
-    assert "새로 고치지 않는다" in rendered
-    assert "finalAuditStatus" in rendered
+    assert "rewrite_priorities" not in rendered
+    assert "상투구를 되살리거나" in rendered
 
 
 def test_rewrite_prompt_embeds_active_rules_without_detect_stage():
@@ -752,8 +759,7 @@ def test_rewrite_prompt_includes_compact_rulebook_priorities_only_in_rewrite():
     review_payload = json.loads(
         prompts.review_user_prompt(
             request,
-            context,
-            request.text,
+            [],
             AuditResult(status="full_pass", reason="통과"),
         )
     )
@@ -802,11 +808,11 @@ def test_rewrite_audit_review_prompts_follow_single_routine():
     rewrite_prompt = prompts.rewrite_user_prompt(request, context)
     audit_prompt = prompts.audit_user_prompt(request, context, request.text, [])
     audit_result = AuditResult(status="full_pass", reason="통과")
-    review_prompt = prompts.review_user_prompt(request, context, request.text, audit_result)
+    review_prompt = prompts.review_user_prompt(request, [], audit_result)
 
     assert "im_not_ai_quick_rules" not in json.loads(rewrite_prompt)
     assert "rewrite_priorities" in json.loads(rewrite_prompt)
-    assert "preservation_audit" in json.loads(review_prompt)
+    assert "segments" in json.loads(review_prompt)
     assert "exact_preserve_targets" not in json.loads(rewrite_prompt)
     assert "exact_preserve_targets" in json.loads(audit_prompt)
     assert "exact_preserve_targets" in json.loads(review_prompt)
@@ -1501,9 +1507,13 @@ async def test_strict_conditional_audit_is_handled_by_review_without_rewrite_loo
                 reason="조건부 감사 결과입니다.",
             )
 
-        async def review(self, request, context, revised_text, audit_result):
+        async def review_segments(self, request, segments, audit_result):
             calls.append("review")
-            return _strict_review_result(request, revised_text)
+            assert [segment.index for segment in segments] == [0]
+            assert segments[0].corrections[0].before == "보고서"
+            return SegmentReviewResult(
+                repairedSegments=[RepairedSegment(index=0, text="2026년 보고서입니다.")],
+            )
 
     runner = RewriteGraphRunner(_settings(), ConditionalAuditLLM())
     response = await runner.run(
@@ -1517,7 +1527,7 @@ async def test_strict_conditional_audit_is_handled_by_review_without_rewrite_loo
     assert response.revisedText == "2026년 보고서입니다."
 
 
-async def test_strict_conditional_audit_routes_to_review_even_without_flagged_edits():
+async def test_strict_conditional_audit_without_blocking_edits_skips_review():
     calls = []
 
     class ConditionalStatusOnlyLLM:
@@ -1540,20 +1550,14 @@ async def test_strict_conditional_audit_routes_to_review_even_without_flagged_ed
                 reason="조건부 감사 결과입니다.",
             )
 
-        async def review(self, request, context, revised_text, audit_result):
-            calls.append("review")
-            return _strict_review_result(
-                request,
-                revised_text,
-                final_warnings=audit_result.warnings,
-                status="full_pass",
-            )
+        async def review_segments(self, request, segments, audit_result):
+            raise AssertionError("advisory audit output must not trigger a review pass")
 
     response = await RewriteGraphRunner(_settings(), ConditionalStatusOnlyLLM()).run(
         RewriteRequestForTest.model_validate(_payload(text="2026년 보고서입니다."))
     )
 
-    assert calls == ["rewrite", "audit", "review"]
+    assert calls == ["rewrite", "audit"]
     assert response.revisedText == "2026년 보고서입니다."
     assert any("복원 필요 가능성" in warning for warning in response.warnings)
 
@@ -1666,8 +1670,11 @@ async def test_strict_final_warnings_do_not_force_original_when_quote_remains_mi
     )
     response = await RewriteGraphRunner(_settings(), MissingQuoteStrictLLM()).run(request)
 
-    assert response.revisedText == "첫 번째는 소스 정리 기능입니다."
-    assert not any("보존되어야 하는 표현이 결과" in warning for warning in response.warnings)
+    # The missing quote is restored from the source sentence that held it;
+    # the rest of the draft is kept rather than reverting to the original.
+    assert response.revisedText.startswith("첫 번째는 소스 정리 기능입니다.")
+    assert "소셜미디어 성장에 가장 도움이 되는 자료" in response.revisedText
+    assert response.revisedText != text
     assert not any("원문을 반환" in warning for warning in response.warnings)
     assert any("직접 인용" in warning for warning in response.warnings)
 
@@ -1772,7 +1779,8 @@ async def test_strict_rewrite_does_not_repair_incomplete_revised_text_from_chang
     response = await RewriteGraphRunner(_settings(), InconsistentStrictLLM()).run(request)
 
     assert audited_texts == ["첫 번째는 소스 정리 기능입니다. 에이전트에게 "]
-    assert response.revisedText == "첫 번째는 소스 정리 기능입니다. 에이전트에게 "
+    assert response.revisedText.startswith("첫 번째는 소스 정리 기능입니다. 에이전트에게 ")
+    assert response.revisedText != complete_revised
     assert not any("revisedText가 불완전" in item for item in response.summary)
     assert not any("원문을 반환" in warning for warning in response.warnings)
     assert any("출력 잘림" in warning for warning in response.warnings)
@@ -1805,16 +1813,25 @@ async def test_model_review_that_damages_preserved_values_falls_back_to_local_re
                 status="conditional_pass",
                 flaggedEdits=[
                     {
-                        "issue": "사람이 확인할 경미한 주의점입니다.",
-                        "action": "warning",
-                        "severity": "low",
+                        "before": "정리했습니다",
+                        "after": "다시 정리했습니다",
+                        "issue": "원문에 없는 '다시'가 추가됐습니다.",
+                        "checklistFailed": [13],
+                        "action": "restore_original",
+                        "correctionDirection": "'다시'를 빼고 원문 표현으로 복원합니다.",
+                        "severity": "high",
                     }
                 ],
-                reason="경미한 확인 항목이 있습니다.",
+                reason="첨가된 표현이 있습니다.",
             )
 
-        async def review(self, request, context, revised_text, audit_result):
-            return _strict_review_result(request, "출시 일정은 유지합니다.")
+        async def review_segments(self, request, segments, audit_result):
+            assert [segment.index for segment in segments] == [1]
+            # Buggy behavior under test: the repaired sentence introduces a
+            # number that is not in the source.
+            return SegmentReviewResult(
+                repairedSegments=[RepairedSegment(index=1, text="2027 계획은 정리했습니다.")],
+            )
 
     request = RewriteRequestForTest.model_validate(
         _payload(
@@ -1824,13 +1841,15 @@ async def test_model_review_that_damages_preserved_values_falls_back_to_local_re
     )
     response = await RewriteGraphRunner(_settings(), DamagingReviewLLM()).run(request)
 
-    assert response.revisedText == draft
+    assert "2027" not in response.revisedText
     assert "2026년 5월" in response.revisedText
+    # The local path still applies the audit correction on the draft.
+    assert response.revisedText == "2026년 5월 출시 일정은 유지합니다. 세부 계획은 정리했습니다."
     assert any("로컬 복원 결과로 대체했습니다" in warning for warning in response.warnings)
     assert any("보존 대상 훼손이 초안보다 늘었습니다" in warning for warning in response.warnings)
 
 
-async def test_strict_review_can_return_safe_final_candidate_without_rewrite_loop():
+async def test_truncated_draft_ships_with_warning_and_no_segment_review():
     rewrite_calls = 0
     text = (
         "첫 번째는 소스 정리 기능입니다. 에이전트가 저장된 모든 소스를 살펴보고 관련 자료끼리 묶어 "
@@ -1840,9 +1859,8 @@ async def test_strict_review_can_return_safe_final_candidate_without_rewrite_loo
         "이 기능이 제대로 작동하면 앱은 단순한 캡처 도구를 넘어 작업에 바로 쓰이는 컨텍스트 "
         "시스템이 됩니다."
     )
-    safe_text = text.replace("자료를 찾아 작은", "자료를 찾아서 작은")
 
-    class ReviewRepairsLLM:
+    class TruncatingLLM:
         async def rewrite(self, request):
             raise AssertionError("strict graph should call node-specific methods")
 
@@ -1851,32 +1869,27 @@ async def test_strict_review_can_return_safe_final_candidate_without_rewrite_loo
             rewrite_calls += 1
             return RewriteResult(
                 revisedText="첫 번째는 소스 정리 기능입니다. 에이전트가",
-                changes=[
-                    Change(
-                        original="자료",
-                        revised="자료",
-                        reason="테스트용 strict 초안입니다.",
-                        type="clarity",
-                        riskLevel="low",
-                    )
-                ],
+                changes=[],
                 summary=[f"{rewrite_calls}라운드 초안입니다."],
             )
 
         async def audit(self, request, context, revised_text, changes):
             return AuditResult(status="full_pass", reason="모델 감사는 통과했습니다.")
 
-        async def review(self, request, context, revised_text, audit_result):
-            return _strict_review_result(request, safe_text)
+        async def review_segments(self, request, segments, audit_result):
+            # A completion failure has no sentence to point at, so the segment
+            # review must not be asked to regenerate the passage.
+            raise AssertionError("segment review must not run for completion failures")
 
     request = RewriteRequestForTest.model_validate(
         _payload(text=text, rewrite_mode="strict", max_rounds=2, protected_terms=[])
     )
-    response = await RewriteGraphRunner(_settings(), ReviewRepairsLLM()).run(request)
+    response = await RewriteGraphRunner(_settings(), TruncatingLLM()).run(request)
 
-    assert response.revisedText == safe_text
+    assert response.revisedText == "첫 번째는 소스 정리 기능입니다. 에이전트가"
     assert response.usage.rounds == 1
     assert rewrite_calls == 1
+    assert any("출력 잘림" in warning for warning in response.warnings)
 
 
 def test_text_above_core_max_chars_returns_422():
@@ -2242,29 +2255,24 @@ async def test_openrouter_rewrite_once_omits_temperature_for_parameter_routing(m
 def test_openrouter_schema_marks_pydantic_default_fields_required():
     response_format = _openrouter_response_format(
         "rewrite_result",
-        RewriteResult.model_json_schema(),
+        RewriteOutput.model_json_schema(),
     )
 
     schema = response_format["json_schema"]["schema"]
     assert schema["required"] == list(schema["properties"].keys())
+    assert set(schema["required"]) == {"revisedText", "changes", "summary", "warnings"}
     assert "default" not in json.dumps(schema)
     assert "title" not in json.dumps(schema)
 
-    finding_schema = schema["$defs"]["Finding"]
-    assert finding_schema["required"] == list(finding_schema["properties"].keys())
-    assert "textSpan" in finding_schema["required"]
-    assert "start" in finding_schema["required"]
-    assert "end" in finding_schema["required"]
+    # Internal bookkeeping never reaches the model.
+    rendered = json.dumps(schema)
+    for internal in ("selfCheck", "residualFindings", "qualityLevel", "changeRate", "inputTokens"):
+        assert internal not in rendered
 
-    assert schema["properties"]["residualFindings"]["items"] == {"$ref": "#/$defs/Finding"}
-
-    review_response_format = _openrouter_response_format(
-        "preservation_review_result",
-        StrictReviewResult.model_json_schema(),
-    )
-    rendered_review_format = json.dumps(review_response_format)
-    assert review_response_format["json_schema"]["name"] == "preservation_review_result"
-    assert "strict_review_result" not in rendered_review_format
+    change_schema = schema["$defs"]["Change"]
+    assert change_schema["required"] == ["original", "revised", "reason", "type", "riskLevel"]
+    assert "룰 번호" in change_schema["properties"]["reason"]["description"]
+    assert "concision" in change_schema["properties"]["type"]["description"]
 
 
 def test_metrics_v2_computes_im_not_ai_signal_keys():
@@ -2504,12 +2512,12 @@ async def test_chunked_rewrite_requests_transition_smoothing_once():
     assert response.revisedText == text
 
 
-async def test_review_that_reverts_draft_wholesale_falls_back_to_local_repair():
+async def test_segment_review_restores_flagged_sentence_and_keeps_other_fixes():
     original = "이 지표는 개선이 필요할 것으로 판단된다. 성과를 통해 결과를 확인했다."
     draft = "이 지표는 개선해야 한다. 성과로 결과를 확인했다."
     calls = []
 
-    class RevertingReviewLLM:
+    class SegmentReviewLLM:
         async def rewrite(self, request):
             raise AssertionError("graph should call rewrite_once")
 
@@ -2535,30 +2543,74 @@ async def test_review_that_reverts_draft_wholesale_falls_back_to_local_repair():
                 ],
             )
 
-        async def review(self, request, context, revised_text, audit_result):
+        async def review_segments(self, request, segments, audit_result):
             calls.append("review")
-            # Buggy behavior under test: rebase on the original instead of the
-            # draft, discarding every safe style improvement.
-            return StrictReviewResult(
-                revisedText=request.text,
-                changes=[],
-                summary=["원문 기준으로 복원했습니다."],
-                finalAuditStatus="full_pass",
+            assert len(segments) == 1
+            assert segments[0].index == 0
+            assert segments[0].draft_sentence == "이 지표는 개선해야 한다."
+            assert segments[0].original_sentence == "이 지표는 개선이 필요할 것으로 판단된다."
+            # Even an index the graph did not ask for is ignored on splice.
+            return SegmentReviewResult(
+                repairedSegments=[
+                    RepairedSegment(index=0, text="이 지표는 개선이 필요해 보인다."),
+                    RepairedSegment(index=1, text="성과를 통해 결과를 확인했다."),
+                ],
+                inputTokens=11,
+                outputTokens=5,
             )
 
     request = RewriteRequestForTest.model_validate(
         _payload(text=original, protected_terms=[])
     )
 
-    response = await RewriteGraphRunner(_settings(), RevertingReviewLLM()).run(request)
+    response = await RewriteGraphRunner(_settings(), SegmentReviewLLM()).run(request)
 
     assert calls == ["rewrite", "audit", "review"]
-    # The flagged hedge is restored, but the safe fix ("성과로") survives
-    # instead of the whole draft being thrown away.
-    assert "개선이 필요할 것으로 판단된다" in response.revisedText
-    assert "성과로 결과를 확인했다" in response.revisedText
-    assert response.revisedText != original
-    assert any("원문으로 되돌아갔" in warning for warning in response.warnings)
+    assert response.revisedText == "이 지표는 개선이 필요해 보인다. 성과로 결과를 확인했다."
+    assert response.usage.inputTokens >= 11
+    assert not any("로컬에서 부분 복원" in warning for warning in response.warnings)
+
+
+async def test_low_severity_rewrite_flag_becomes_warning_without_review():
+    calls = []
+
+    class AdvisoryAuditLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            calls.append("rewrite")
+            return RewriteResult(revisedText="이 지표는 개선해야 한다.", changes=[], summary=["초안입니다."])
+
+        async def audit(self, request, context, revised_text, changes):
+            calls.append("audit")
+            return AuditResult(
+                status="full_pass",
+                reason="경미한 양태 변화가 있습니다.",
+                flaggedEdits=[
+                    {
+                        "before": "개선이 필요할 것으로 판단된다",
+                        "after": "개선해야 한다",
+                        "issue": "추론 양태가 다소 강해졌습니다.",
+                        "checklistFailed": [6],
+                        "action": "rewrite_required",
+                        "correctionDirection": "필요하면 양태를 완화합니다.",
+                        "severity": "low",
+                    }
+                ],
+            )
+
+        async def review_segments(self, request, segments, audit_result):
+            raise AssertionError("low-severity flags must not trigger a review pass")
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(text="이 지표는 개선이 필요할 것으로 판단된다.", protected_terms=[])
+    )
+    response = await RewriteGraphRunner(_settings(), AdvisoryAuditLLM()).run(request)
+
+    assert calls == ["rewrite", "audit"]
+    assert response.revisedText == "이 지표는 개선해야 한다."
+    assert any("추론 양태가 다소 강해졌습니다" in warning for warning in response.warnings)
 
 
 async def test_local_repair_skips_style_restore_that_reintroduces_s1():
@@ -2617,3 +2669,264 @@ async def test_local_repair_skips_style_restore_that_reintroduces_s1():
     assert "후속 논의가 필요한 지점을 보여준다" in response.revisedText
     assert "개선이 필요할 것으로 판단된다" in response.revisedText
     assert any("게이트 수리 결과를 유지" in warning for warning in response.warnings)
+
+
+def test_display_changes_attach_reasons_by_location_not_index():
+    from humanize_core.diff import UNEXPLAINED_CHANGE_REASON, build_display_safe_changes
+
+    original = "이번 프로젝트에 대해 공유드립니다. 데이터 분석을 통해 원인을 파악했습니다. 서비스 개선에 있어 핵심은 속도입니다."
+    revised = "이번 프로젝트를 공유드립니다. 데이터를 분석해 원인을 파악했습니다. 서비스 개선에서 핵심은 속도입니다."
+    seeds = [
+        # Draft-based snippet that no longer exists in the final text: must not
+        # be attached to any group.
+        Change(original="데이터 분석을 통해", revised="데이터 분석으로", reason="초안 기준 사유", type="clarity"),
+        Change(original="개선에 있어", revised="개선에서", reason="'에 있어'를 '에서'로 줄였습니다.", type="grammar"),
+        Change(original="프로젝트에 대해", revised="프로젝트를", reason="'에 대해'를 목적어로 이었습니다.", type="clarity"),
+    ]
+
+    changes = build_display_safe_changes(original, revised, seeds)
+
+    reasons = [change.reason for change in changes]
+    assert reasons == [
+        "'에 대해'를 목적어로 이었습니다.",
+        UNEXPLAINED_CHANGE_REASON,
+        "'에 있어'를 '에서'로 줄였습니다.",
+    ]
+    assert "초안 기준 사유" not in reasons
+    for change in changes:
+        assert change.original in original and change.revised in revised
+
+
+async def test_finalize_explains_every_diff_group_with_model_reasons_as_hints():
+    from humanize_core.diff import UNEXPLAINED_CHANGE_REASON
+    from humanize_core.im_not_ai.schemas import ChangeExplanation
+
+    original = "이번 프로젝트에 대해 공유드립니다. 데이터 분석을 통해 원인을 파악했습니다."
+    revised = "이번 프로젝트를 공유드립니다. 데이터를 분석해 원인을 파악했습니다."
+    explain_calls = []
+
+    class ExplainingLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            return RewriteResult(
+                revisedText=revised,
+                changes=[Change(original="프로젝트에 대해", revised="프로젝트를", reason="'에 대해'를 목적어로 이었습니다.", type="clarity")],
+                summary=["모델이 쓴 요약입니다."],
+                inputTokens=10,
+                outputTokens=5,
+            )
+
+        async def audit(self, request, context, revised_text, changes):
+            return AuditResult(status="full_pass", reason="통과", inputTokens=3, outputTokens=1)
+
+        async def explain_changes(self, request, revised_text, items):
+            explain_calls.append(items)
+            return ChangeExplanationResult(
+                items=[
+                    ChangeExplanation(index=item["index"], reason=f"설명 {item['index']}: 구간을 다듬었습니다.", type="grammar", riskLevel="low")
+                    for item in items
+                ],
+                summary=["설명 단계가 쓴 요약입니다."],
+                inputTokens=7,
+                outputTokens=2,
+            )
+
+    request = RewriteRequestForTest.model_validate(_payload(text=original, protected_terms=[]))
+    response = await RewriteGraphRunner(_settings(), ExplainingLLM()).run(request)
+
+    # Both diff groups are sent; the model's reason rides along only for the group it matched.
+    assert len(explain_calls) == 1
+    items = explain_calls[0]
+    assert [item["index"] for item in items] == [0, 1]
+    assert items[0]["draft_reason"] == "'에 대해'를 목적어로 이었습니다."
+    assert items[1]["draft_reason"] == ""
+    assert "통해" in items[1]["original"]
+    # Snippets are cut at word boundaries, never mid-word.
+    for item in items:
+        assert not item["original"].startswith(("트", "터"))
+    reasons = [change.reason for change in response.changes]
+    assert reasons == ["설명 0: 구간을 다듬었습니다.", "설명 1: 구간을 다듬었습니다."]
+    assert UNEXPLAINED_CHANGE_REASON not in reasons
+    assert all(change.type == "grammar" for change in response.changes)
+    assert response.summary == ["설명 단계가 쓴 요약입니다."]
+    assert response.usage.inputTokens == 10 + 3 + 7
+    assert response.usage.outputTokens == 5 + 1 + 2
+
+
+async def test_finalize_keeps_generic_reason_when_explain_call_fails():
+    from humanize_core.diff import UNEXPLAINED_CHANGE_REASON
+
+    original = "이번 프로젝트에 대해 공유드립니다."
+    revised = "이번 프로젝트를 공유드립니다."
+
+    class FailingExplainLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            return RewriteResult(revisedText=revised, changes=[], summary=["초안입니다."])
+
+        async def audit(self, request, context, revised_text, changes):
+            return AuditResult(status="full_pass", reason="통과")
+
+        async def explain_changes(self, request, revised_text, items):
+            raise LLMResponseError("explain failed")
+
+    request = RewriteRequestForTest.model_validate(_payload(text=original, protected_terms=[]))
+    response = await RewriteGraphRunner(_settings(), FailingExplainLLM()).run(request)
+
+    assert response.revisedText == revised
+    assert [change.reason for change in response.changes] == [UNEXPLAINED_CHANGE_REASON]
+
+
+def test_review_segments_locate_flagged_sentences_by_after_then_before():
+    from humanize_core.graph import _review_segments_for
+    from humanize_core.im_not_ai.schemas import FlaggedEdit
+
+    request = RewriteRequestForTest.model_validate(
+        _payload(
+            text="첫 문장은 그대로입니다. 출시는 2026년 5월입니다. 셋째 문장은 개선이 필요할 것으로 판단된다.",
+            protected_terms=[],
+        )
+    )
+    draft = "첫 문장은 그대로입니다. 출시는 내년 봄입니다. 셋째 문장은 손봐야 한다."
+    edits = [
+        FlaggedEdit(before="2026년 5월", after="내년 봄", issue="날짜", action="preserve_exact", severity="high"),
+        # `after` not in the draft: fall back to the original sentence that holds `before`.
+        FlaggedEdit(before="개선이 필요할 것으로 판단된다", after="", issue="양태", action="rewrite_required", severity="high"),
+        # Nothing to locate: dropped.
+        FlaggedEdit(issue="전체 누락", action="restore_original", severity="high"),
+    ]
+
+    segments = _review_segments_for(request, draft, edits)
+
+    assert [segment.index for segment in segments] == [1, 2]
+    assert segments[0].draft_sentence == "출시는 내년 봄입니다."
+    assert segments[0].original_sentence == "출시는 2026년 5월입니다."
+    assert segments[1].draft_sentence == "셋째 문장은 손봐야 한다."
+    assert segments[1].corrections[0].issue == "양태"
+
+
+def test_splice_repaired_segments_keeps_separators_and_ignores_unknown_indexes():
+    from humanize_core.graph import _review_segments_for, _splice_repaired_segments
+    from humanize_core.im_not_ai.schemas import FlaggedEdit
+
+    request = RewriteRequestForTest.model_validate(_payload(text="가 문장. 나 문장.\n\n다 문장.", protected_terms=[]))
+    draft = "가 문장. 나 문장!\n\n다 문장."
+    segments = _review_segments_for(
+        request,
+        draft,
+        [FlaggedEdit(before="나 문장.", after="나 문장!", issue="x", action="restore_original", severity="high")],
+    )
+    review = SegmentReviewResult(
+        repairedSegments=[
+            RepairedSegment(index=1, text="  나 문장.  "),
+            RepairedSegment(index=2, text="바꾸면 안 됨"),
+        ]
+    )
+
+    spliced, repaired = _splice_repaired_segments(draft, segments, review)
+
+    assert spliced == "가 문장. 나 문장.\n\n다 문장."
+    assert repaired == [1]
+
+
+def test_display_changes_use_each_model_reason_once():
+    from humanize_core.diff import UNEXPLAINED_CHANGE_REASON, build_display_safe_changes
+
+    original = "모니터링 알림은 정상 동작했지만, 담당자 부재로 대응이 40분 늦었습니다."
+    revised = "모니터링 알림은 정상 동작했지만 담당자 부재로 대응이 40분 지연되었습니다."
+    # One sentence-wide model change covering two separate edits.
+    seeds = [Change(original=original, revised=revised, reason="쉼표를 지우고 어휘를 바꿨습니다.", type="clarity")]
+
+    changes = build_display_safe_changes(original, revised, seeds)
+
+    assert len(changes) == 2
+    reasons = [change.reason for change in changes]
+    assert reasons.count("쉼표를 지우고 어휘를 바꿨습니다.") == 1
+    assert reasons.count(UNEXPLAINED_CHANGE_REASON) == 1
+
+
+def test_display_change_snippets_end_on_word_boundaries():
+    from humanize_core.diff import build_display_safe_changes
+
+    original = "데이터 분석을 통해 고객 이탈의 원인을 파악할 수 있었고 설문 조사를 진행했습니다."
+    revised = "데이터를 분석해 고객 이탈의 원인을 파악했고 설문 조사를 진행했습니다."
+
+    for change in build_display_safe_changes(original, revised, []):
+        assert change.original in original and change.revised in revised
+        assert not change.original[0].isspace() and not change.original[-1].isspace()
+        # Context starts right after a boundary and ends right before one.
+        start = original.index(change.original)
+        end = start + len(change.original)
+        assert start == 0 or original[start - 1] in " .,"
+        assert end == len(original) or original[end] in " .,"
+
+
+def test_clean_repaired_segment_rejects_neighbour_copies_and_extra_sentences():
+    from humanize_core.graph import _clean_repaired_segment
+
+    bodies = ["첫 문장은 그대로입니다.", "둘째 문장을 고칩니다.", "셋째 문장도 그대로입니다."]
+
+    # Neighbour sentence prepended / appended verbatim is stripped.
+    assert _clean_repaired_segment("첫 문장은 그대로입니다. 둘째 문장을 손봤습니다.", 1, bodies) == "둘째 문장을 손봤습니다."
+    assert _clean_repaired_segment("둘째 문장을 손봤습니다. 셋째 문장도 그대로입니다.", 1, bodies) == "둘째 문장을 손봤습니다."
+    # Another draft sentence embedded elsewhere, or a split into two sentences: rejected.
+    assert _clean_repaired_segment("둘째 문장을 손봤습니다. 그리고 첫 문장은 그대로입니다.", 1, bodies) == ""
+    assert _clean_repaired_segment("둘째 문장입니다. 손봤습니다.", 1, bodies) == ""
+    assert _clean_repaired_segment("   ", 1, bodies) == ""
+    # A plain single-sentence repair passes through trimmed.
+    assert _clean_repaired_segment("  둘째 문장을 다듬었습니다.  ", 1, bodies) == "둘째 문장을 다듬었습니다."
+
+
+async def test_review_summary_has_no_internal_notes():
+    class BlockingAuditLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            return RewriteResult(revisedText="2026년 보고서를 냈습니다.", changes=[], summary=["표현을 다듬었습니다."])
+
+        async def audit(self, request, context, revised_text, changes):
+            return AuditResult(
+                status="conditional_pass",
+                reason="첨가",
+                flaggedEdits=[
+                    {
+                        "before": "보고서입니다",
+                        "after": "보고서를 냈습니다",
+                        "issue": "없던 행위가 추가됐습니다.",
+                        "action": "restore_original",
+                        "severity": "high",
+                    }
+                ],
+            )
+
+    request = RewriteRequestForTest.model_validate(_payload(text="2026년 보고서입니다.", protected_terms=[]))
+    response = await RewriteGraphRunner(_settings(), BlockingAuditLLM()).run(request)
+
+    assert response.revisedText == "2026년 보고서입니다."
+    assert not any("Audit repair" in item for item in response.summary)
+    assert any("로컬에서 부분 복원" in warning for warning in response.warnings)
+
+
+def test_display_changes_diff_whole_words_not_characters():
+    from humanize_core.diff import build_display_safe_changes
+
+    original = "근본적인 혁신이 필요하다. 대단히 어려운 일이지만 3월까지 첫 결과를 내야 한다."
+    revised = "근본적인 혁신이 필요하다. 쉽지 않은 과제이지만 3월까지 첫 성과를 내야 한다."
+
+    changes = build_display_safe_changes(original, revised, [])
+
+    originals = [change.original for change in changes]
+    # A replaced word shows up whole; no "일이지만" -> "제이지만" fragments, and
+    # one change's context never leaks the neighbouring edit's before/after.
+    assert any("대단히 어려운 일이지만" in snippet for snippet in originals)
+    assert not any(change.revised.startswith("제이지만") for change in changes)
+    assert len(changes) == 2
+    assert "첫 결과를" in changes[1].original and "첫 성과를" in changes[1].revised
+    assert "일이지만" not in changes[1].original
+    for change in changes:
+        assert change.original in original and change.revised in revised

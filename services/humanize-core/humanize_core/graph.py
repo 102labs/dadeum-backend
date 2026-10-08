@@ -2,17 +2,16 @@ import asyncio
 import re
 import time
 from collections import Counter
+from difflib import SequenceMatcher
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from humanize_core.config import Settings
 from humanize_core.debug_log import RewriteDebugLogger
-from humanize_core.diff import build_display_safe_changes
+from humanize_core.diff import build_display_safe_changes, is_unexplained_change
 from humanize_core.im_not_ai.audit import (
-    change_rate,
     local_detect,
-    mark_high_risk_if_needed,
     split_sentences,
 )
 from humanize_core.im_not_ai.preservation import (
@@ -21,11 +20,14 @@ from humanize_core.im_not_ai.preservation import (
 )
 from humanize_core.im_not_ai.schemas import (
     AuditResult,
+    ChangeExplanationResult,
     Finding,
     FlaggedEdit,
-    RewriteResult,
     HumanizeContext,
+    ReviewSegment,
+    RewriteResult,
     RulebookHint,
+    SegmentReviewResult,
     StrictReviewResult,
 )
 from humanize_core.llm import LLMConfigurationError, LLMResponseError, RewriteLLM
@@ -59,6 +61,8 @@ class RewriteState(TypedDict, total=False):
     chunk_count: int
     style_gate_input_tokens: int
     style_gate_output_tokens: int
+    explain_input_tokens: int
+    explain_output_tokens: int
 
 
 class RewriteGraphRunner:
@@ -397,10 +401,6 @@ class RewriteGraphRunner:
                 llm_result.revisedText,
                 llm_result.changes,
             )
-            llm_result.changes = mark_high_risk_if_needed(
-                llm_result.changes,
-                audit_result.status == "fail" or _audit_requires_preservation_repair(audit_result),
-            )
             result: RewriteState = {"audit_result": audit_result, "llm_result": llm_result}
         except Exception as exc:
             self._stage_failed(state, "audit", stage_started_at, exc)
@@ -491,43 +491,73 @@ class RewriteGraphRunner:
         try:
             request = state["request"]
             llm_result = state["llm_result"]
+            audit_result = state["audit_result"]
+            repair_edits = [edit for edit in audit_result.flaggedEdits if edit.action != "warning"]
+            segments = _review_segments_for(request, llm_result.revisedText, repair_edits)
+            model_result: SegmentReviewResult | None = None
+            implementation = "local_repair_review"
+            review_result: StrictReviewResult
 
-            if hasattr(self.llm, "review"):
-                review_result: StrictReviewResult = await self.llm.review(  # type: ignore[attr-defined]
+            if segments and hasattr(self.llm, "review_segments"):
+                model_result = await self.llm.review_segments(  # type: ignore[attr-defined]
                     request,
-                    state["humanize_context"],
-                    llm_result.revisedText,
-                    state["audit_result"],
+                    segments,
+                    audit_result,
                 )
-                implementation = "review"
-                regressions = _review_output_regressions(
-                    request,
+                spliced_text, repaired_indexes = _splice_repaired_segments(
                     llm_result.revisedText,
-                    review_result.revisedText,
+                    segments,
+                    model_result,
                 )
+                regressions = _review_output_regressions(request, llm_result.revisedText, spliced_text)
                 if regressions:
-                    fallback = _local_repair_review(request, llm_result, state["audit_result"])
-                    review_result = fallback.model_copy(
-                        update={
-                            "warnings": _dedupe(
-                                [
-                                    "모델 review 출력이 완성도·보존 재검증에 실패해 로컬 복원 결과로 대체했습니다.",
-                                    *regressions,
-                                    *fallback.warnings,
-                                ]
-                            ),
-                            "inputTokens": review_result.inputTokens,
-                            "outputTokens": review_result.outputTokens,
-                        }
-                    )
                     implementation = "local_repair_review_fallback"
+                    review_result = _repair_review(
+                        request,
+                        llm_result,
+                        audit_result,
+                        start_text=llm_result.revisedText,
+                        extra_warnings=[
+                            "모델 review 출력이 완성도·보존 재검증에 실패해 로컬 복원 결과로 대체했습니다.",
+                            *regressions,
+                        ],
+                    )
+                else:
+                    implementation = "review_segments"
+                    unresolved_note = (
+                        [f"감사 지적 중 모델이 수리하지 못한 항목이 있습니다: " + "; ".join(model_result.unresolved[:3])]
+                        if model_result.unresolved
+                        else []
+                    )
+                    handled = [
+                        correction
+                        for segment in segments
+                        if segment.index in repaired_indexes
+                        for correction in segment.corrections
+                    ]
+                    review_result = _repair_review(
+                        request,
+                        llm_result,
+                        audit_result,
+                        start_text=spliced_text,
+                        extra_warnings=[*model_result.warnings, *unresolved_note],
+                        model_handled_edits=handled,
+                    )
             else:
-                review_result = _local_repair_review(
+                review_result = _repair_review(
                     request,
                     llm_result,
-                    state["audit_result"],
+                    audit_result,
+                    start_text=llm_result.revisedText,
                 )
-                implementation = "local_repair_review"
+
+            if model_result is not None:
+                review_result = review_result.model_copy(
+                    update={
+                        "inputTokens": model_result.inputTokens,
+                        "outputTokens": model_result.outputTokens,
+                    }
+                )
             final_llm_result = LLMRewriteResult(
                 revisedText=review_result.revisedText,
                 changes=review_result.changes,
@@ -550,7 +580,8 @@ class RewriteGraphRunner:
             details={
                 "implementation": implementation,
                 "result_status": review_result.finalAuditStatus,
-                "quality_level": review_result.qualityLevel,
+                "segment_count": len(segments),
+                "repair_edit_count": len(repair_edits),
                 "revised_text_length": len(review_result.revisedText),
                 "changes_count": len(review_result.changes),
                 "summary_count": len(review_result.summary),
@@ -578,6 +609,7 @@ class RewriteGraphRunner:
             review_result = state.get("review_result")
             if audit_result and not review_result:
                 warnings.extend(audit_result.warnings)
+                warnings.extend(edit.issue for edit in audit_result.flaggedEdits if edit.issue)
             if review_result:
                 warnings.extend(review_result.warnings)
                 warnings.extend(review_result.finalAuditWarnings)
@@ -587,20 +619,49 @@ class RewriteGraphRunner:
                 llm_result.revisedText,
                 llm_result.changes,
             )
+            summary = list(llm_result.summary)
+            unexplained_count = sum(1 for change in display_safe_changes if is_unexplained_change(change))
+            explained_count = 0
+            explain_failed = False
+            explain_input_tokens = 0
+            explain_output_tokens = 0
+            explainable = [change for change in display_safe_changes if change.original or change.revised]
+            if explainable and hasattr(self.llm, "explain_changes"):
+                try:
+                    display_safe_changes, explanation = await self._explain_changes(
+                        state["request"],
+                        llm_result.revisedText,
+                        display_safe_changes,
+                    )
+                except LLMResponseError:
+                    # The model-authored and generic reasons are still a valid
+                    # response; never fail the rewrite because the explanation
+                    # call did.
+                    explain_failed = True
+                else:
+                    explained_count = len(explanation.items)
+                    explain_input_tokens = explanation.inputTokens
+                    explain_output_tokens = explanation.outputTokens
+                    if explanation.summary:
+                        summary = [item.strip() for item in explanation.summary if item.strip()]
             latency_ms = int((time.perf_counter() - state["started_at"]) * 1000)
             response = RewriteResponse(
                 revisedText=llm_result.revisedText,
                 changes=display_safe_changes,
-                summary=llm_result.summary,
+                summary=_dedupe(summary),
                 warnings=_dedupe(warnings),
                 usage=Usage(
-                    inputTokens=_sum_input_tokens(state),
-                    outputTokens=_sum_output_tokens(state),
+                    inputTokens=_sum_input_tokens(state) + explain_input_tokens,
+                    outputTokens=_sum_output_tokens(state) + explain_output_tokens,
                     latencyMs=latency_ms,
                     rounds=max(1, state.get("round", 1)),
                 ),
             )
-            result: RewriteState = {"response": response}
+            result: RewriteState = {
+                "response": response,
+                "explain_input_tokens": explain_input_tokens,
+                "explain_output_tokens": explain_output_tokens,
+            }
         except Exception as exc:
             self._stage_failed(state, "finalize", stage_started_at, exc)
             raise
@@ -610,6 +671,11 @@ class RewriteGraphRunner:
             "finalize",
             stage_started_at,
             details={
+                "unexplained_change_count": unexplained_count,
+                "explained_change_count": explained_count,
+                "explain_failed": explain_failed,
+                "explain_input_tokens": explain_input_tokens,
+                "explain_output_tokens": explain_output_tokens,
                 "revised_text_length": len(response.revisedText),
                 "changes_count": len(response.changes),
                 "summary_count": len(response.summary),
@@ -625,6 +691,46 @@ class RewriteGraphRunner:
             },
         )
         return result
+
+
+    async def _explain_changes(
+        self,
+        request: RewriteRequest,
+        revised_text: str,
+        changes: list[Change],
+    ) -> tuple[list[Change], ChangeExplanationResult]:
+        # Every real diff group goes to the explainer. The rewriting model's own
+        # reason (when one was matched to the group) travels as a hint; the
+        # explainer sees the actual before/after spans and writes the user-facing
+        # text, which keeps reasons aligned with what the user is shown.
+        pending = [
+            (index, change)
+            for index, change in enumerate(changes)
+            if change.original or change.revised
+        ]
+        explanation: ChangeExplanationResult = await self.llm.explain_changes(  # type: ignore[attr-defined]
+            request,
+            revised_text,
+            [
+                {
+                    "index": index,
+                    "original": change.original,
+                    "revised": change.revised,
+                    "draft_reason": "" if is_unexplained_change(change) else change.reason,
+                }
+                for index, change in pending
+            ],
+        )
+        by_index = {item.index: item for item in explanation.items if item.reason.strip()}
+        explained = list(changes)
+        for index, change in pending:
+            item = by_index.get(index)
+            if item is None:
+                continue
+            explained[index] = change.model_copy(
+                update={"reason": item.reason.strip(), "type": item.type, "riskLevel": item.riskLevel}
+            )
+        return explained, explanation
 
 
 def _route_after_audit(state: RewriteState) -> str:
@@ -660,13 +766,19 @@ def _error_code_from_exception(exc: Exception) -> str:
 
 
 def _audit_requires_review(audit_result: AuditResult) -> bool:
+    """Review when the draft cannot ship as-is (completion failure, blocking
+    fidelity edit) or when the audit asks for a medium/high repair such as a
+    lost modality. Low-severity suggestions and warnings ride along as
+    response warnings instead. The review itself is sentence-scoped, so the
+    cost of entering it is one repaired sentence, not a regenerated passage."""
     if audit_result.status == "fail":
-        return True
-    if audit_result.status == "conditional_pass":
         return True
     if _audit_requires_preservation_repair(audit_result):
         return True
-    return any(edit.action != "warning" for edit in audit_result.flaggedEdits)
+    return any(
+        edit.action != "warning" and edit.severity != "low"
+        for edit in audit_result.flaggedEdits
+    )
 
 
 def _rewrite_result_state(
@@ -895,63 +1007,210 @@ def _local_repair_review(
     llm_result: LLMRewriteResult,
     audit_result: AuditResult,
 ) -> StrictReviewResult:
+    return _repair_review(request, llm_result, audit_result, start_text=llm_result.revisedText)
+
+
+def _repair_review(
+    request: RewriteRequest,
+    llm_result: LLMRewriteResult,
+    audit_result: AuditResult,
+    *,
+    start_text: str,
+    extra_warnings: list[str] | None = None,
+    model_handled_edits: list[FlaggedEdit] | None = None,
+) -> StrictReviewResult:
+    """Finish the review from `start_text` (the draft, or the draft with model
+    repaired sentences spliced in): apply any still-unsatisfied audit edits
+    locally, then assemble the review record."""
     summary = list(llm_result.summary)
     repair_edits = [edit for edit in audit_result.flaggedEdits if edit.action != "warning"]
-    corrections = [edit.correctionDirection or edit.issue for edit in repair_edits]
-    if corrections:
-        repaired_text, applied, unresolved, style_kept = _apply_local_audit_repairs(
-            request,
-            llm_result.revisedText,
-            repair_edits,
-        )
-        summary.append("Audit repair: 감사 지적 항목만 원문 기준으로 부분 복원했습니다.")
-        warnings = [f"감사 지적 {len(applied)}건을 로컬에서 부분 복원했습니다."] if applied else []
-        if unresolved:
-            warnings.append(
-                "감사 지적 중 로컬 자동 복원이 어려운 항목이 있습니다: "
-                + "; ".join(unresolved[:3])
-            )
-        if style_kept:
-            warnings.append(
-                f"원문 복원 시 룰북 S1 위반이 되살아나는 스타일 지적 {len(style_kept)}건은 "
-                "게이트 수리 결과를 유지했습니다."
-            )
+    warnings = list(extra_warnings or [])
+    if not repair_edits:
         return StrictReviewResult(
-            revisedText=repaired_text,
-            changes=build_display_safe_changes(request.text, repaired_text, llm_result.changes),
+            revisedText=start_text,
+            changes=llm_result.changes,
             summary=summary,
             warnings=warnings,
-            auditCorrectionsApplied=applied,
-            finalAuditStatus="full_pass" if not unresolved else audit_result.status,
-            finalBlockingIssues=unresolved,
+            finalAuditStatus=audit_result.status,
+            finalAuditWarnings=audit_result.warnings,
             qualityLevel="B",
             inputTokens=0,
             outputTokens=0,
         )
 
-    summary.append("Audit repair: 감사 단계에서 복원할 항목이 없어 초안을 유지했습니다.")
+    handled = list(model_handled_edits or [])
+    # The model restored meaning for these sentences (possibly with new
+    # wording), so the literal before/after check must not undo its work.
+    remaining = [edit for edit in repair_edits if edit not in handled]
+    repaired_text, applied, unresolved, style_kept, locally_changed = _apply_local_audit_repairs(
+        request,
+        start_text,
+        remaining,
+    )
+    applied = _dedupe([*(edit.correctionDirection or edit.issue for edit in handled), *applied])
+    if locally_changed:
+        warnings.append(f"감사 지적 {len(locally_changed)}건을 로컬에서 부분 복원했습니다.")
+    if unresolved:
+        warnings.append(
+            "감사 지적 중 로컬 자동 복원이 어려운 항목이 있습니다: " + "; ".join(unresolved[:3])
+        )
+    if style_kept:
+        warnings.append(
+            f"원문 복원 시 룰북 S1 위반이 되살아나는 스타일 지적 {len(style_kept)}건은 "
+            "게이트 수리 결과를 유지했습니다."
+        )
     return StrictReviewResult(
-        revisedText=llm_result.revisedText,
-        changes=llm_result.changes,
+        revisedText=repaired_text,
+        changes=build_display_safe_changes(request.text, repaired_text, llm_result.changes),
         summary=summary,
-        warnings=[],
-        finalAuditStatus=audit_result.status,
-        finalAuditWarnings=audit_result.warnings,
+        warnings=_dedupe(warnings),
+        auditCorrectionsApplied=applied,
+        finalAuditStatus="full_pass" if not unresolved else audit_result.status,
+        finalAuditWarnings=[warning for warning in audit_result.warnings if _is_completion_warning(warning)],
+        finalBlockingIssues=unresolved,
         qualityLevel="B",
         inputTokens=0,
         outputTokens=0,
     )
 
 
+# ---- segment review: locate flagged sentences, splice repaired ones back in
+
+_SEGMENT_MATCH_MIN_RATIO = 0.3
+
+
+def _review_segments_for(
+    request: RewriteRequest,
+    draft_text: str,
+    repair_edits: list[FlaggedEdit],
+) -> list[ReviewSegment]:
+    bodies = [span.rstrip() for span in _split_sentence_spans(draft_text)]
+    originals = split_sentences(request.text)
+    grouped: dict[int, ReviewSegment] = {}
+    for edit in repair_edits:
+        index = _locate_review_segment(edit, bodies, originals)
+        if index is None:
+            continue
+        segment = grouped.get(index)
+        if segment is None:
+            closest, _ratio = _closest_sentence(bodies[index], originals)
+            segment = ReviewSegment(
+                index=index,
+                draft_sentence=bodies[index],
+                original_sentence=closest or "",
+            )
+            grouped[index] = segment
+        segment.corrections.append(edit)
+    return [grouped[index] for index in sorted(grouped)]
+
+
+def _locate_review_segment(
+    edit: FlaggedEdit,
+    bodies: list[str],
+    originals: list[str],
+) -> int | None:
+    if edit.after:
+        for index, body in enumerate(bodies):
+            if body and edit.after in body:
+                return index
+    if edit.before:
+        original_sentence = next((sentence for sentence in originals if edit.before in sentence), None)
+        if original_sentence is not None:
+            index, ratio = _closest_index(original_sentence, bodies)
+            if index is not None and ratio >= _SEGMENT_MATCH_MIN_RATIO:
+                return index
+        for index, body in enumerate(bodies):
+            if body and edit.before in body:
+                return index
+    return None
+
+
+def _closest_index(text: str, candidates: list[str]) -> tuple[int | None, float]:
+    best_index: int | None = None
+    best_ratio = 0.0
+    for index, candidate in enumerate(candidates):
+        if not candidate:
+            continue
+        ratio = SequenceMatcher(None, text, candidate).ratio()
+        if ratio > best_ratio:
+            best_index, best_ratio = index, ratio
+    return best_index, best_ratio
+
+
+def _closest_sentence(text: str, candidates: list[str]) -> tuple[str | None, float]:
+    index, ratio = _closest_index(text, candidates)
+    return (candidates[index] if index is not None else None), ratio
+
+
+def _clean_repaired_segment(text: str, index: int, bodies: list[str]) -> str:
+    """Accept a repaired sentence only when it is still one sentence in place.
+
+    Models like to return the neighbouring sentence along with the repaired
+    one, or to split the sentence in two; splicing that in duplicates text.
+    Neighbour sentences copied verbatim are stripped; anything that still
+    contains another draft sentence or more sentences than the draft segment
+    had is rejected (the draft sentence stays)."""
+    cleaned = text.strip()
+    if not cleaned:
+        return ""
+    for neighbour in (index - 1, index + 1):
+        if 0 <= neighbour < len(bodies) and bodies[neighbour]:
+            if cleaned.startswith(bodies[neighbour]):
+                cleaned = cleaned[len(bodies[neighbour]):].strip()
+            if cleaned.endswith(bodies[neighbour]):
+                cleaned = cleaned[: -len(bodies[neighbour])].strip()
+    if not cleaned:
+        return ""
+    for other_index, body in enumerate(bodies):
+        if other_index != index and len(body) >= 8 and body in cleaned:
+            return ""
+    draft_sentences = len(split_sentences(bodies[index])) if bodies[index] else 1
+    if len(split_sentences(cleaned)) > max(1, draft_sentences):
+        return ""
+    return cleaned
+
+
+def _splice_repaired_segments(
+    draft_text: str,
+    segments: list[ReviewSegment],
+    review: SegmentReviewResult,
+) -> tuple[str, list[int]]:
+    """Replace only the requested sentences; anything else the model returns is ignored."""
+    spans = _split_sentence_spans(draft_text)
+    bodies = [span.rstrip() for span in spans]
+    allowed = {segment.index for segment in segments}
+    replacements: dict[int, str] = {}
+    for item in review.repairedSegments:
+        if item.index not in allowed:
+            continue
+        text = _clean_repaired_segment(item.text, item.index, bodies)
+        if text:
+            replacements[item.index] = text
+    parts: list[str] = []
+    for index, span in enumerate(spans):
+        if index in replacements:
+            body = span.rstrip()
+            parts.append(replacements[index] + span[len(body):])
+        else:
+            parts.append(span)
+    return "".join(parts), sorted(replacements)
+
+
 def _apply_local_audit_repairs(
     request: RewriteRequest,
     revised_text: str,
     flagged_edits: list[FlaggedEdit],
-) -> tuple[str, list[str], list[str], list[str]]:
+) -> tuple[str, list[str], list[str], list[str], list[str]]:
+    """Returns (text, applied, unresolved, style_kept, locally_changed).
+
+    `applied` lists every satisfied correction, whether the text already met
+    it or this function changed it; `locally_changed` is the subset this
+    function actually edited."""
     repaired = revised_text
     applied: list[str] = []
     unresolved: list[str] = []
     style_kept: list[str] = []
+    locally_changed: list[str] = []
     for edit in flagged_edits:
         label = edit.correctionDirection or edit.issue
         if _restoring_reintroduces_s1(edit):
@@ -972,9 +1231,10 @@ def _apply_local_audit_repairs(
         if next_text != repaired:
             repaired = next_text
             applied.append(label)
+            locally_changed.append(label)
         else:
             unresolved.append(label)
-    return repaired, _dedupe(applied), _dedupe(unresolved), _dedupe(style_kept)
+    return repaired, _dedupe(applied), _dedupe(unresolved), _dedupe(style_kept), _dedupe(locally_changed)
 
 
 # Value preservation (numbers, names, quotes) always wins, but a style-only
@@ -1026,14 +1286,6 @@ def _clean_repaired_text(text: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
-# Review must repair only flagged spots, never abandon the draft. A draft
-# that meaningfully differed from the source but comes back nearly identical
-# to the source means the model rebased on original_text instead of the
-# draft, discarding every safe style improvement along the way.
-_REVIEW_REVERT_DRAFT_MIN_CHANGE_RATE = 5.0
-_REVIEW_REVERT_MAX_CHANGE_RATE = 1.0
-
-
 def _review_output_regressions(
     request: RewriteRequest,
     draft_text: str,
@@ -1052,14 +1304,6 @@ def _review_output_regressions(
     review_flagged = _local_preservation_flagged_edits(request, review_text)
     if len(review_flagged) > len(draft_flagged):
         reasons.append("Review 출력에서 보존 대상 훼손이 초안보다 늘었습니다.")
-    if (
-        not draft_completion  # a broken draft may legitimately be rebuilt from the source
-        and change_rate(request.text, draft_text) >= _REVIEW_REVERT_DRAFT_MIN_CHANGE_RATE
-        and change_rate(request.text, review_text) <= _REVIEW_REVERT_MAX_CHANGE_RATE
-    ):
-        reasons.append(
-            "Review 출력이 감사 지적 반영 대신 초안 수정 내용을 버리고 원문으로 되돌아갔습니다."
-        )
     return _dedupe(reasons)
 
 

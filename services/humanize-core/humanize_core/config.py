@@ -30,10 +30,13 @@ class Settings(BaseSettings):
         default="~anthropic/claude-haiku-latest",
         alias="HUMANIZE_STRICT_AUDIT_MODEL_NAME",
     )
+    explain_model_name: str | None = Field(default=None, alias="HUMANIZE_EXPLAIN_MODEL_NAME")
     strict_review_model_name: str = Field(
         default="openai/gpt-5.4-mini",
         alias="HUMANIZE_STRICT_REVIEW_MODEL_NAME",
     )
+    # Used only by scripts/eval_golden.py (--judge); not part of the runtime graph.
+    eval_judge_model_name: str | None = Field(default=None, alias="HUMANIZE_EVAL_JUDGE_MODEL_NAME")
     core_api_key: str = Field(default="", alias="HUMANIZE_CORE_API_KEY")
     signing_secret: str = Field(default="", alias="HUMANIZE_CORE_SIGNING_SECRET")
     max_chars: int = Field(default=5_000, alias="HUMANIZE_MAX_CHARS")
