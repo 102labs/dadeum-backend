@@ -71,7 +71,7 @@ from humanize_core.schemas import RewriteRequest, RewriteResponse  # noqa: E402
 
 GOLDEN_PATH = CORE_DIR / "evals" / "golden_set.json"
 REPORTS_DIR = CORE_DIR / "evals" / "reports"
-DEFAULT_JUDGE_MODEL = "openai/gpt-5.4"
+DEFAULT_JUDGE_MODEL = "anthropic/claude-opus-5.5"
 JUDGE_MODEL_ENV = "HUMANIZE_EVAL_JUDGE_MODEL_NAME"
 
 # Reason strings diff.py emits when the model's own change list could not be

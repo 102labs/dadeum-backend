@@ -19,20 +19,20 @@ class Settings(BaseSettings):
     model_provider: str = Field(default="stub", alias="HUMANIZE_MODEL_PROVIDER")
     model_name: str = Field(default="stub", alias="HUMANIZE_MODEL_NAME")
     rewrite_model_name: str = Field(
-        default="openai/gpt-5-mini",
+        default="anthropic/claude-sonnet-5.5",
         validation_alias=AliasChoices("HUMANIZE_REWRITE_MODEL_NAME", "HUMANIZE_FAST_MODEL_NAME"),
     )
     rewrite_fallback_model_name: str = Field(
-        default="~anthropic/claude-haiku-latest",
+        default="anthropic/claude-haiku-5.5",
         alias="HUMANIZE_REWRITE_FALLBACK_MODEL_NAME",
     )
     strict_audit_model_name: str = Field(
-        default="~anthropic/claude-haiku-latest",
+        default="anthropic/claude-haiku-5.5",
         alias="HUMANIZE_STRICT_AUDIT_MODEL_NAME",
     )
-    explain_model_name: str | None = Field(default=None, alias="HUMANIZE_EXPLAIN_MODEL_NAME")
+    explain_model_name: str | None = Field(default="anthropic/claude-sonnet-5.5", alias="HUMANIZE_EXPLAIN_MODEL_NAME")
     strict_review_model_name: str = Field(
-        default="openai/gpt-5.4-mini",
+        default="anthropic/claude-haiku-5.5",
         alias="HUMANIZE_STRICT_REVIEW_MODEL_NAME",
     )
     # Used only by scripts/eval_golden.py (--judge); not part of the runtime graph.

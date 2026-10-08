@@ -347,11 +347,11 @@ def create_llm(
     openrouter_site_url: str | None = None,
     # Defaults mirror humanize_core.config.Settings; api.py always passes the
     # Settings values explicitly, so these only matter for direct callers.
-    rewrite_model_name: str = "openai/gpt-5-mini",
-    rewrite_fallback_model_name: str = "~anthropic/claude-haiku-latest",
-    strict_audit_model_name: str = "~anthropic/claude-haiku-latest",
-    strict_review_model_name: str = "openai/gpt-5.4-mini",
-    explain_model_name: str | None = None,
+    rewrite_model_name: str = "anthropic/claude-sonnet-5.5",
+    rewrite_fallback_model_name: str = "anthropic/claude-haiku-5.5",
+    strict_audit_model_name: str = "anthropic/claude-haiku-5.5",
+    strict_review_model_name: str = "anthropic/claude-haiku-5.5",
+    explain_model_name: str | None = "anthropic/claude-sonnet-5.5",
 ) -> RewriteLLM:
     normalized = provider.lower().strip()
     if normalized == "stub":

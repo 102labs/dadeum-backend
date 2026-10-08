@@ -110,11 +110,11 @@ For local tests, the default `stub` provider avoids external LLM calls. Producti
 ```text
 HUMANIZE_MODEL_PROVIDER=openrouter
 OPENROUTER_API_KEY=...
-HUMANIZE_REWRITE_MODEL_NAME=openai/gpt-5-mini
-HUMANIZE_REWRITE_FALLBACK_MODEL_NAME=~anthropic/claude-haiku-latest
-HUMANIZE_STRICT_AUDIT_MODEL_NAME=~anthropic/claude-haiku-latest
-HUMANIZE_STRICT_REVIEW_MODEL_NAME=openai/gpt-5.4-mini
-HUMANIZE_EXPLAIN_MODEL_NAME=anthropic/claude-sonnet-5.5   # optional
+HUMANIZE_REWRITE_MODEL_NAME=anthropic/claude-sonnet-5.5
+HUMANIZE_REWRITE_FALLBACK_MODEL_NAME=anthropic/claude-haiku-5.5
+HUMANIZE_STRICT_AUDIT_MODEL_NAME=anthropic/claude-haiku-5.5
+HUMANIZE_STRICT_REVIEW_MODEL_NAME=anthropic/claude-haiku-5.5
+HUMANIZE_EXPLAIN_MODEL_NAME=anthropic/claude-sonnet-5.5
 HUMANIZE_JOB_STORE_PATH=/data/humanize_jobs.sqlite3
 HUMANIZE_JOB_ENCRYPTION_KEY=<32-byte base64url or hex key>
 HUMANIZE_DEBUG_LOG_ENABLED=true
@@ -122,7 +122,7 @@ HUMANIZE_DEBUG_LOG_DIR=/data/humanize-core/logs
 HUMANIZE_DEBUG_LOG_INCLUDE_PLAINTEXT=false
 ```
 
-The four model names above are the code defaults in `config.py`. See
+The model names above are the code defaults in `config.py`: Sonnet 5.5 on the quality-critical stages (rewrite, style repair, explain), Haiku 5.5 on the supporting ones (audit, segment review, fallback). See
 `.env.example` for the full variable list (chunking, style gate, job worker).
 
 ## Graph
@@ -223,7 +223,7 @@ scores the output in four layers:
    register; `--pairwise` (with `--baseline`) runs a blind A/B against the
    baseline's output. The judge calls OpenRouter with
    `HUMANIZE_EVAL_JUDGE_MODEL_NAME` (or `--judge-model`, default
-   `openai/gpt-5.4`); pick a model that is not the rewrite model.
+   `anthropic/claude-opus-5.5`); pick a model that is not the rewrite model.
 
 Stage telemetry (style-gate rounds, audit status, review path and local
 fallback, chunking, per-stage latency) is captured from the graph's debug

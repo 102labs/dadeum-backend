@@ -245,7 +245,7 @@ Every stage logs `graph.stage.started / succeeded / failed` with durations and c
 | `anthropic`  | yes     | no           | local only  | local only     | no              | Messages API, JSON parsed from text; non-JSON falls back to raw text |
 | `openrouter` | yes     | yes          | yes         | yes            | yes             | Chat Completions `response_format: json_schema`, `require_parameters: true` |
 
-Production is expected to run `openrouter`. With `openai` or `anthropic` the style gate is skipped, audit/review are local rule checks only, and unexplained diff groups keep a generic reason.
+Production is expected to run `openrouter` with Claude Sonnet 5.5 on the quality-critical stages (rewrite, style repair, explain) and Claude Haiku 5.5 on the supporting ones (audit, segment review, rewrite fallback); the eval judge is Claude Opus 5.5 so it is never the model under test. Measured 2026-10 on the 12 core golden cases: Sonnet and gpt-5-mini rewrite within judge noise of each other, Sonnet ~40% faster. With `openai` or `anthropic` the style gate is skipped, audit/review are local rule checks only, and unexplained diff groups keep a generic reason.
 
 The structured-output schemas sent to the model are the slim `*Output` models in `im_not_ai/schemas.py` (`RewriteOutput`, `AuditOutput`, `SegmentReviewOutput`, `ChangeExplanationOutput`): only the fields the graph consumes. Token usage, quality grades, and residual findings live on the internal `*Result` models and are filled by code. `Change` field descriptions (reason format, `type` meanings, `riskLevel` meanings) travel inside the JSON schema; the same contract is repeated in the rewrite, style-repair, and explain prompts as `changes_contract`.
 
@@ -275,12 +275,12 @@ OPENROUTER_API_KEY                               # required for provider=openrou
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_APP_TITLE=Dadeum Humanize Core        # sent as X-Title
 OPENROUTER_SITE_URL                              # optional, sent as HTTP-Referer
-HUMANIZE_REWRITE_MODEL_NAME=openai/gpt-5-mini    # alias: HUMANIZE_FAST_MODEL_NAME
-HUMANIZE_REWRITE_FALLBACK_MODEL_NAME=~anthropic/claude-haiku-latest
-HUMANIZE_STRICT_AUDIT_MODEL_NAME=~anthropic/claude-haiku-latest
-HUMANIZE_STRICT_REVIEW_MODEL_NAME=openai/gpt-5.4-mini
-HUMANIZE_EXPLAIN_MODEL_NAME=                     # optional; change-explanation model, falls back to the rewrite primary
-HUMANIZE_EVAL_JUDGE_MODEL_NAME=                  # eval only (scripts/eval_golden.py --judge), not used by the service
+HUMANIZE_REWRITE_MODEL_NAME=anthropic/claude-sonnet-5.5    # alias: HUMANIZE_FAST_MODEL_NAME
+HUMANIZE_REWRITE_FALLBACK_MODEL_NAME=anthropic/claude-haiku-5.5
+HUMANIZE_STRICT_AUDIT_MODEL_NAME=anthropic/claude-haiku-5.5
+HUMANIZE_STRICT_REVIEW_MODEL_NAME=anthropic/claude-haiku-5.5
+HUMANIZE_EXPLAIN_MODEL_NAME=anthropic/claude-sonnet-5.5   # change-explanation model; empty -> rewrite primary
+HUMANIZE_EVAL_JUDGE_MODEL_NAME=anthropic/claude-opus-5.5     # eval only (scripts/eval_golden.py --judge), not used by the service
 ```
 
 Security and limits:
