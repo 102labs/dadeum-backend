@@ -51,7 +51,9 @@ def rewrite_system_prompt() -> str:
         "Perform an active rewrite pass: improve the whole Korean business passage in one call. "
         "Your job is rewriting, not auditing; a later audit will check preservation problems. "
         "Apply the rulebook where it applies: remove translationese, AI-signature idioms, and mechanical repetition, and fix awkward word order, so the passage reads as if a careful Korean colleague wrote it. "
-        "Edit only what is actually wrong. A sentence that is already natural and breaks no rule is copied unchanged; rewording it is itself an AI tell (over-editing). "
+        "Fix every rule violation. Beyond that, edit like a careful editor: tighten a sentence when it can be made shorter or clearer "
+        "without changing its meaning, modality, register, or word choices (drop doubled words, cut empty connectors, split an overlong sentence). "
+        "Leave a sentence unchanged when no such improvement exists; rewording for its own sake (synonym swaps, reordering that changes nothing) is itself an AI tell (over-editing). "
         "Keep facts, numbers, dates, names, quotations, URLs, and code intact. Keep the writer's modality (guess, possibility, plan, recommendation), degree, subject, tense and honorific level; style rules never license changing them. "
         "Use user_intent, tone, and preserve_formatting to choose tone and formatting. "
         "Do not add new claims, examples, metaphors, facts, or citations. "
@@ -77,7 +79,9 @@ def rewrite_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str
         "rewrite_scope": "문장 흐름, 어순, 리듬, 연결, 명확성, 번역투, 반복 구조, AI 티 패턴을 전체 글 기준으로 적극 다듬고 여러 구간에서 실제 표현을 개선하되 원문의 의미와 정보량은 보존한다.",
         "edit_policy": [
             "탐지된 룰 위반(rewrite_priorities)과 직접 보이는 AI 티·번역투는 반드시 고친다. 수치·날짜·인용이 있는 문장도 그 주변 표현은 고친다.",
-            "이미 자연스럽고 룰 위반이 없는 문장은 글자 그대로 둔다. 바꾸기 위해 바꾸지 않는다. 멀쩡한 문장을 흔드는 것도 AI 티다.",
+            "룰 위반이 없는 문장도 편집자처럼 본다: 뜻·어감·양태·격식·단어 선택을 그대로 둔 채 더 짧고 분명하게 만들 수 있으면 고친다"
+            "(겹말 삭제, 빈 연결어 제거, 너무 긴 문장 분리, '~하고 싶으시면 ~할 수 있습니다' 같은 늘어진 구조 정리). "
+            "그런 개선이 없는 문장은 글자 그대로 둔다. 바꿔도 더 좋아지지 않는 수정(동의어 교체, 어순만 뒤집기)은 과윤문이다.",
             "동의어 교체 금지: '관리'→'운영', '결과'→'성과', '늦었다'→'지연되었다'처럼 뜻이 같은 다른 단어로 바꾸지 않는다. 쉬운 말을 한자어로 올리지 않는다.",
             "양태 유지: 추측(~로 보인다, ~것 같다), 가능(~할 수 있었다), 예정(~할 예정이다), 권고(~해야 한다)의 등급을 바꾸지 않는다. "
             "완곡 표현은 같은 글에서 습관처럼 반복될 때만 줄이고, 실제 불확실성·가능성은 그대로 둔다.",
@@ -90,7 +94,7 @@ def rewrite_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str
         ],
         "edit_intensity": {
             "target": "변경률 숫자가 아니라 룰북 신호 해결과 문체 체감성을 목표로 삼는다.",
-            "minimum": "S1/S2 신호, 반복 표현, 번역투가 있으면 해당 구간에 실질 수정이 있어야 한다.",
+            "minimum": "S1/S2 신호, 반복 표현, 번역투가 있으면 해당 구간에 실질 수정이 있어야 한다. 위반이 없어도 더 짧고 분명해지는 수정은 한다.",
             "avoid": "새 정보 추가, 과한 마케팅 톤, 원문 구조 파괴, 인용·수치·날짜 변경, 멀쩡한 문장 손대기, 동의어 교체",
         },
         "edit_examples": [
@@ -110,7 +114,7 @@ def rewrite_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str
             "선택된 tone을 반영하되 업무 문맥과 격식 범위 보존",
             "잔존 S1 패턴 0건",
             "원문에 없는 사실·예시·비유·근거·과한 마케팅 문구 추가 없음",
-            "바뀐 문장마다 '왜 바꿨는지'가 룰 위반 또는 눈에 보이는 어색함으로 설명되는지 확인한다. 설명이 안 되면 원문으로 되돌린다.",
+            "바뀐 문장마다 '왜 바꿨는지'가 룰 위반, 눈에 보이는 어색함, 또는 '더 짧고 분명해졌다'로 설명되는지 확인한다. 설명이 안 되면 원문으로 되돌린다.",
             "추측·예정·가능·권고의 등급, 주어, 높임 등급이 원문과 같은지 확인한다.",
             "user_intent, tone, preserve_formatting 반영",
         ],

@@ -648,7 +648,8 @@ def test_rewrite_prompt_runs_active_rulebook_single_pass():
     assert payload["rewrite_pass"] == "active_rulebook_single_pass"
     assert "must_edit_policy" not in payload
     assert "edit_policy" in payload
-    assert any("글자 그대로 둔다" in item for item in payload["edit_policy"])
+    assert any("더 짧고 분명하게" in item and "글자 그대로 둔다" in item for item in payload["edit_policy"])
+    assert any("동의어 교체, 어순만 뒤집기" in item for item in payload["edit_policy"])
     assert any("동의어 교체 금지" in item for item in payload["edit_policy"])
     assert any("양태 유지" in item for item in payload["edit_policy"])
     assert any("높임 등급 유지" in item for item in payload["edit_policy"])
@@ -3051,3 +3052,13 @@ def test_settings_reads_reasoning_effort(monkeypatch):
     assert Settings(_env_file=None).reasoning_effort == "low"
     monkeypatch.delenv("HUMANIZE_REASONING_EFFORT")
     assert Settings(_env_file=None).reasoning_effort == "none"
+
+
+def test_detector_flags_single_sentence_initial_wrapup_label():
+    text = "정리하면 본문은 요약 보고서이고 근거는 부록에 있습니다. 합칠까요?"
+    findings = local_detect(text, focus_categories=["D-1"]).findings
+    assert [f.textSpan.strip() for f in findings] == ["정리하면"]
+    assert findings[0].severity == "S1"
+    # Mid-sentence uses and other words are not labels.
+    clean = "회의 내용을 정리하면서 요약본도 만들었습니다."
+    assert "D-1" not in {f.category for f in local_detect(clean, focus_categories=["D-1"]).findings}
