@@ -55,13 +55,17 @@ The Next.js server signs and forwards the Core payload with internal fields:
 }
 ```
 
-Core accepts up to 5,000 characters per request. Core infers internal genre
-hints from the text itself. The rewrite logic uses `user_intent`, `tone`,
-`protected_terms`, and `preserve_formatting` to choose the rewrite direction,
-preservation policy, and formatting policy.
+Core accepts up to `HUMANIZE_MAX_CHARS` characters per request (default 5,000;
+longer input is `422`). Unknown fields are rejected (`422`). Core infers
+internal rulebook hints from the text itself with a local regex detector. The
+rewrite logic uses `user_intent`, `tone`, `protected_terms`, and
+`preserve_formatting` to choose the rewrite direction, preservation policy, and
+formatting policy. `max_rounds` is validated (1-3) but not used by the graph;
+`usage.rounds` reports `1 + style-gate repair rounds`.
 
-`rewrite_mode=fast` keeps the existing synchronous behavior and returns a
-`RewriteResponse` from `POST /v1/rewrite`.
+`rewrite_mode=fast` runs the graph synchronously and returns a `RewriteResponse`
+from `POST /v1/rewrite`. Errors: `422` input limit, `503` provider not
+configured, `502` invalid structured model response.
 
 `rewrite_mode=strict` is asynchronous. `POST /v1/rewrite` validates and encrypts
 the payload, stores a durable job, and returns `202 Accepted`:
@@ -76,9 +80,19 @@ the payload, stores a durable job, and returns `202 Accepted`:
 ```
 
 The Next.js server polls `GET /v1/rewrite-jobs/{jobId}` using the same signed
-header scheme. A succeeded job includes `result`; queued/running/failed jobs do
-not expose plaintext bodies. `DELETE /v1/rewrite-jobs/{jobId}` cancels queued or
-running work and purges encrypted payload/result fields.
+header scheme (hash of the empty body). The status record carries `status`
+(`queued | running | succeeded | failed | cancelled | expired`), `attempts`,
+`maxAttempts`, timestamps, `latencyMs`, `errorCode`, and `result`. A succeeded
+job includes `result`; other states do not expose plaintext bodies.
+`DELETE /v1/rewrite-jobs/{jobId}` cancels queued or running work and purges
+encrypted payload/result fields. Unknown ids return `404`.
+
+Strict jobs are processed by one in-process worker task started with the app.
+`invalid_model_response` and `internal_error` are retried up to
+`HUMANIZE_JOB_MAX_ATTEMPTS` (2); `input_limit_exceeded` and
+`model_not_configured` fail immediately. Running jobs whose lock is older than
+`HUMANIZE_JOB_LOCK_SECONDS` (600) are reclaimed. Rows expire after
+`HUMANIZE_JOB_RETENTION_SECONDS` (86400).
 
 ## Local Run
 
@@ -91,7 +105,7 @@ The Compose stack exposes Caddy on port `80` and proxies `/health`,
 `/v1/rewrite`, and `/v1/rewrite-jobs/*` to the FastAPI container. It mounts a
 named volume at `/data` for durable SQLite job storage.
 
-For local tests, the default `stub` provider avoids external LLM calls. Production can use the OpenRouter path:
+For local tests, the default `stub` provider avoids external LLM calls. Production uses the OpenRouter path:
 
 ```text
 HUMANIZE_MODEL_PROVIDER=openrouter
@@ -107,35 +121,69 @@ HUMANIZE_DEBUG_LOG_DIR=/data/humanize-core/logs
 HUMANIZE_DEBUG_LOG_INCLUDE_PLAINTEXT=false
 ```
 
-`rewrite_mode` defaults to `fast`; strict requests run through the durable async
-job queue.
-The graph path is:
+The four model names above are the code defaults in `config.py`. See
+`.env.example` for the full variable list (chunking, style gate, job worker).
+
+## Graph
 
 ```text
-prepare -> rewrite -> audit -> review? -> finalize
+prepare -> rewrite -> style_gate -> audit -> (review) -> finalize
 ```
 
-The worker executes the same graph for strict jobs. `rewrite` performs one
-full-pass rewrite using `strict-rules.md`. The full rulebook rides in the
-static system prompt so providers can prefix-cache it; the per-request user
-payload carries only the text, settings, and compact rulebook hints (with
-occurrence counts, never raw source spans). `audit`
-compares the draft to the original and flags only harmful preservation problems:
-changed facts, numbers, dates, units, names, quotations, protected terms, order,
-polarity, causality, omitted content, or added claims. If audit has no repair
-items, the graph finalizes immediately. If audit finds a repair item, `review`
-applies only those corrections and returns the final candidate. The graph
-re-checks the model review output locally; if the review step itself truncated
-the text or damaged preserved values relative to the draft, the graph discards
-it and falls back to the local repair path with a warning.
+- `prepare`: length check, local regex detection (`im_not_ai/audit.py`), compact
+  rulebook hints. No LLM call.
+- `rewrite`: one structured LLM call. Text of 1,000+ chars
+  (`HUMANIZE_CHUNK_MIN_CHARS`) is split at sentence boundaries into ~1,000-char
+  chunks, rewritten in parallel, and reassembled. The rulebook
+  (`strict-rules.md`, bodies stripped) rides in the static system prompt so
+  providers can prefix-cache it; the user payload carries the text, settings,
+  and hints with full rule cards and up to 3 short match samples (never spans
+  overlapping numbers, quotes, or protected terms).
+- `style_gate`: re-detect on the draft. If any S1 remains, S2 count reaches
+  `HUMANIZE_STYLE_GATE_S2_THRESHOLD` (3), or the text was chunked (one
+  transition-smoothing pass), call `style_repair` up to
+  `HUMANIZE_STYLE_GATE_MAX_ROUNDS` (2) times. Repairs that add completion
+  warnings, increase preservation damage, or worsen the severity score are
+  discarded. Only the OpenRouter provider implements `style_repair`.
+- `audit`: local completion checks (empty, too short, low sentence/paragraph
+  coverage, cut off mid-sentence) and exact preservation counts (protected
+  terms, quotes, URLs, emails, code spans, dates, numbers/units must not go
+  down or up). The OpenRouter provider adds a model audit for harmful meaning
+  changes. Completion warnings force `fail`.
+- `review` (only when audit is `fail`/`conditional_pass` or flags a repair):
+  the model applies only the audit corrections. The output is re-checked; if
+  it truncated the text, damaged more preserved values, or reverted the draft
+  wholesale to the source, it is replaced by the local repair path with a
+  warning. Without a provider `review` the local repair runs directly. Style
+  restores that would reintroduce an S1 violation are kept as the gated draft.
+- `finalize`: merge warnings, rebuild display-safe `changes` (exact substrings
+  of source and result, max 12), sum tokens across all stages.
+
+Provider capability matrix:
+
+| provider     | rewrite | style_repair | model audit | model review |
+|--------------|---------|--------------|-------------|--------------|
+| `stub`       | local   | no           | local only  | local only   |
+| `openai`     | yes     | no           | local only  | local only   |
+| `anthropic`  | yes     | no           | local only  | local only   |
+| `openrouter` | yes     | yes          | yes         | yes          |
 
 The OpenAI provider uses the Responses API with strict JSON Schema structured
 output for `revisedText`, `changes`, and `summary`. Usage metrics come from the
 provider response metadata, not from model-generated JSON.
 
 The OpenRouter provider uses Chat Completions with `response_format:
-json_schema` for rewrite, audit, and review. It sets provider routing to require
-models that support the requested structured-output parameters.
+json_schema` (`strict: true`, schema normalised to `additionalProperties:
+false` with every property required) for rewrite, style repair, audit, and
+review. It sets `provider.require_parameters: true` and sends no temperature.
+Model lists are tried in order and fall through on any exception: rewrite and
+style repair use `[rewrite, rewrite fallback]`, audit `[audit, rewrite]`,
+review `[review, rewrite]`. When `HUMANIZE_MODEL_NAME` is set to anything but
+`stub` it replaces the rewrite primary. Every call uses `max_tokens=20000`.
+
+Per-request LLM budget with OpenRouter: 1 rewrite (or N chunk calls) + 0-2
+style repairs + 1 audit + 0-1 review. Fast mode waits for all of it; Core sets
+no request timeout.
 
 ## Golden-Set Eval
 
@@ -204,9 +252,13 @@ Useful event names include `job.enqueued`, `job.claimed`,
 durations, statuses, token counts, warning/change counts, retry decisions, and
 error codes. Repeated polling reads are intentionally not logged.
 
-By default, logs redact plaintext source text, rewritten text, diff/change
-bodies, findings, protected term values, user intent text, prompts, and raw LLM
-payloads. During an explicit debugging window, set:
+Redaction is key-name based (`debug_log.py`): detail keys containing `text`,
+`source`, `revised`, `change`, `summary`, `warning`, `finding`, `intent`,
+`protected`, `term`, `prompt`, `raw`, `body`, `payload`, `result`, and similar
+are written as `[REDACTED length=N]` unless they end with a metric suffix such
+as `_count` or `_ms`. Strings over 256 chars are redacted regardless of key.
+When adding a detail key that carries body text, pick a name the blocklist
+catches. During an explicit debugging window, set:
 
 ```text
 HUMANIZE_DEBUG_LOG_INCLUDE_PLAINTEXT=true

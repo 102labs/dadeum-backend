@@ -309,10 +309,12 @@ def create_llm(
     openrouter_base_url: str = "https://openrouter.ai/api/v1",
     openrouter_app_title: str = "Dadeum Humanize Core",
     openrouter_site_url: str | None = None,
+    # Defaults mirror humanize_core.config.Settings; api.py always passes the
+    # Settings values explicitly, so these only matter for direct callers.
     rewrite_model_name: str = "openai/gpt-5-mini",
     rewrite_fallback_model_name: str = "~anthropic/claude-haiku-latest",
-    strict_audit_model_name: str = "openai/gpt-5",
-    strict_review_model_name: str = "~anthropic/claude-haiku-latest",
+    strict_audit_model_name: str = "~anthropic/claude-haiku-latest",
+    strict_review_model_name: str = "openai/gpt-5.4-mini",
 ) -> RewriteLLM:
     normalized = provider.lower().strip()
     if normalized == "stub":
