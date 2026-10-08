@@ -26,12 +26,16 @@ Core stack:
 ```text
 Python 3.12
 FastAPI
-Pydantic
+Pydantic / pydantic-settings
 LangGraph
+SQLite (durable strict job store, AES-GCM encrypted payloads)
 Uvicorn
 Docker Compose
 Caddy
 ```
+
+LLM providers (`HUMANIZE_MODEL_PROVIDER`): `stub`, `openai`, `anthropic`, `openrouter`.
+Only `openrouter` implements every graph stage. See "Provider Capabilities" below.
 
 ## Production Operations
 
@@ -81,12 +85,14 @@ Core accepts:
 
 ```py
 class RewriteRequest(BaseModel):
-    text: str
-    user_intent: str = ""
+    model_config = ConfigDict(extra="forbid")  # unknown fields -> 422
+
+    text: str = Field(min_length=1)
+    user_intent: str = ""                      # stripped
     rewrite_mode: Literal["fast", "strict"] = "fast"
     tone: Literal["keep", "formal", "friendly"] = "keep"
-    protected_terms: list[str] = []
-    max_rounds: int = 1
+    protected_terms: list[str] = []            # stripped, empty entries dropped
+    max_rounds: int = Field(default=1, ge=1, le=3)
     preserve_formatting: bool = True
 ```
 
@@ -104,7 +110,15 @@ Next.js should build this Core request by combining the browser-provided text an
 }
 ```
 
-Core accepts at most 5,000 characters per request. Core infers any internal genre hints from the text itself. `user_intent`, `rewrite_mode`, `tone`, `protected_terms`, `max_rounds`, and `preserve_formatting` are request controls and must shape rewrite strength, tone, preservation, review depth, and formatting behavior. Fast mode returns synchronously from `POST /v1/rewrite`. Strict mode is durable asynchronous: `POST /v1/rewrite` returns `202 Accepted` with a job id, and the Next.js server polls `GET /v1/rewrite-jobs/{jobId}`.
+Core accepts at most `HUMANIZE_MAX_CHARS` characters per request (default 5,000; longer text returns `422`). Core infers internal rulebook hints from the text itself with a local regex detector; there is no separate LLM detect call.
+
+How the controls are actually used:
+
+- `user_intent`, `tone`, `protected_terms`, `preserve_formatting`: shape the rewrite/style-repair/audit/review prompts and the local preservation checks.
+- `rewrite_mode`: chooses delivery only. `fast` runs the graph synchronously inside `POST /v1/rewrite`; `strict` stores an encrypted job, returns `202 Accepted` with a job id, and the worker runs the **same graph**. There is no separate "strict" prompt or extra review depth.
+- `max_rounds`: validated (1-3) but **not used** by the graph. Round count in `usage.rounds` is `1 + style-gate repair rounds` and is controlled by `HUMANIZE_STYLE_GATE_MAX_ROUNDS`.
+
+The Next.js server polls `GET /v1/rewrite-jobs/{jobId}` for strict jobs.
 
 ## Rewrite Response Contract
 
@@ -133,6 +147,8 @@ Fast synchronous Core requests and completed strict jobs return:
 }
 ```
 
+`changes[].original` and `changes[].revised` are guaranteed to be exact substrings of the request text and `revisedText` (rebuilt with a sequence diff in `finalize` when the model snippets are not). At most 12 display changes are emitted; a 13th summary entry notes the overflow. `changes[].type` is one of `clarity | tone | concision | structure | grammar | meaning`; `riskLevel` is `low | medium | high`.
+
 Strict `POST /v1/rewrite` requests return `202 Accepted` with:
 
 ```json
@@ -143,6 +159,31 @@ Strict `POST /v1/rewrite` requests return `202 Accepted` with:
   "pollAfterMs": 1000
 }
 ```
+
+`GET /v1/rewrite-jobs/{jobId}` and `DELETE /v1/rewrite-jobs/{jobId}` return the job status record:
+
+```json
+{
+  "jobId": "uuid",
+  "requestId": "req_...",
+  "status": "queued | running | succeeded | failed | cancelled | expired",
+  "rewriteMode": "strict",
+  "textLength": 1200,
+  "attempts": 1,
+  "maxAttempts": 2,
+  "createdAt": "2026-07-13T00:00:00Z",
+  "expiresAt": "2026-07-14T00:00:00Z",
+  "startedAt": null,
+  "completedAt": null,
+  "latencyMs": null,
+  "errorCode": null,
+  "result": null
+}
+```
+
+`result` is populated only when `status == "succeeded"`. `errorCode` is one of `input_limit_exceeded`, `model_not_configured`, `invalid_model_response`, `internal_error`. `invalid_model_response` and `internal_error` are retried up to `maxAttempts`; the other two fail immediately. Unknown job ids return `404`. If job storage cannot be opened, strict endpoints return `503`.
+
+Fast-mode error mapping: `422` input limit, `503` provider not configured, `502` invalid structured model response.
 
 ## Server-to-Server Security
 
@@ -159,63 +200,121 @@ X-Signature
 Validation rules:
 
 ```text
-1. X-Core-Api-Key matches HUMANIZE_CORE_API_KEY.
-2. X-Timestamp is within the configured 5 minute tolerance.
-3. X-Body-SHA256 matches sha256(rawJsonBody).
-4. X-Signature matches HMAC-SHA256 over:
+1. All five headers are present and non-empty.
+2. X-Core-Api-Key matches HUMANIZE_CORE_API_KEY (constant-time compare).
+3. X-Timestamp is within 300 seconds of server time. Accepted formats:
+   unix seconds, unix milliseconds (> 10_000_000_000), or ISO-8601.
+4. X-Body-SHA256 matches sha256(rawBody) (hex, case-insensitive).
+   For GET/DELETE the body is empty, so hash the empty byte string.
+5. X-Signature matches HMAC-SHA256 over:
    `${timestamp}.${requestId}.${bodyHash}`
-   using HUMANIZE_CORE_SIGNING_SECRET.
+   using HUMANIZE_CORE_SIGNING_SECRET (hex, case-insensitive).
 ```
 
-Authentication failures return `401 Unauthorized`.
+The same headers are required on `/v1/rewrite-jobs/*`. Authentication failures return `401 Unauthorized` with no detail. Auth runs before body validation, so an invalid body with a bad signature is a `401`, not a `422`.
 
 Do not enable browser CORS for Core.
 
 ## LangGraph Pipeline
 
-The v1 graph flow is:
+The graph (`humanize_core/graph.py`) is:
 
 ```text
-prepare -> rewrite -> audit -> finalize
+prepare -> rewrite -> style_gate -> audit -> (review) -> finalize
 ```
+
+`fast` and `strict` run the identical graph; only delivery differs.
 
 Responsibilities:
 
-- `prepare`: enforce maximum input length, split/analyze input as needed, and infer internal genre hints from the text.
-- `rewrite`: map `user_intent`, `rewrite_mode`, `tone`, and `preserve_formatting` to model instructions; request structured output from the LLM.
-- `audit`: check numbers, dates, proper nouns, and protected terms for preservation; add warnings and high risk flags when needed.
-- `finalize`: return `revisedText`, `changes`, `summary`, `warnings`, and `usage`.
+- `prepare`: enforce `HUMANIZE_MAX_CHARS`; run the local regex detector (`im_not_ai/audit.py::local_detect`, ~50 rules with S1/S2/S3 severity) on the source; build compact rulebook hints (max 24 rules, up to 3 short match samples each, never spans overlapping numbers/quotes/protected terms). No LLM call.
+- `rewrite`: one structured LLM call. Text at or above `HUMANIZE_CHUNK_MIN_CHARS` (default 1,000) is split at sentence boundaries into chunks of about `HUMANIZE_CHUNK_TARGET_CHARS` and rewritten in parallel, then reassembled with the original separators. The full rulebook (`im_not_ai/resources/strict-rules.md`, bodies stripped) sits in the static system prompt; detected rules travel in the user payload with their full rule cards.
+- `style_gate`: re-run the local detector on the draft. If any S1 remains, or S2 count is at or above `HUMANIZE_STYLE_GATE_S2_THRESHOLD` (3), or the text was chunked (one transition-smoothing pass), call the provider's `style_repair` up to `HUMANIZE_STYLE_GATE_MAX_ROUNDS` (2) times. A repair is discarded if it adds completion warnings, increases preservation damage, or worsens the severity score. Skipped when the provider has no `style_repair`.
+- `audit`: local checks first: completion (empty, too short vs. original, low sentence/paragraph coverage, cut off mid-sentence) and exact preservation counts (protected terms, quotes, URLs, emails, code spans, dates, numbers/units) must not go down or up versus the source. Then, if the provider has `audit`, a model audit for harmful meaning changes is merged in. Any completion warning forces `fail`. The first change is marked `riskLevel: high` when the audit requires repair.
+- `review` (conditional): entered when audit status is `fail` or `conditional_pass`, or any flagged edit needs repair. If the provider has `review`, the model applies only the audit corrections; the output is re-checked locally and replaced by the local repair path if it truncated the text, damaged more preserved values, or reverted the draft wholesale to the source. Without a provider `review`, local repair restores flagged values/sentences from the source directly. Style-only restores that would reintroduce an S1 violation are kept as the gated draft with a warning.
+- `finalize`: merge warnings (audit warnings when no review ran; review warnings, final audit warnings, and blocking issues otherwise), rebuild display-safe `changes`, sum tokens across rewrite + style gate + audit + review, and set `usage.rounds = 1 + style-gate rounds`.
+
+Every stage logs `graph.stage.started / succeeded / failed` with durations and counts.
+
+## Provider Capabilities
+
+| provider     | rewrite | style_repair | model audit | model review | notes |
+|--------------|---------|--------------|-------------|--------------|-------|
+| `stub`       | local   | no           | local only  | local only   | deterministic; used by tests |
+| `openai`     | yes     | no           | local only  | local only   | Responses API, strict JSON Schema |
+| `anthropic`  | yes     | no           | local only  | local only   | Messages API, JSON parsed from text; non-JSON falls back to raw text |
+| `openrouter` | yes     | yes          | yes         | yes          | Chat Completions `response_format: json_schema`, `require_parameters: true` |
+
+Production is expected to run `openrouter`. With `openai` or `anthropic` the style gate is skipped and audit/review are local rule checks only.
+
+OpenRouter model selection (`llm.py::OpenRouterRewriteLLM`):
+
+- rewrite and style_repair: `[HUMANIZE_MODEL_NAME if set and not "stub" else HUMANIZE_REWRITE_MODEL_NAME, HUMANIZE_REWRITE_FALLBACK_MODEL_NAME]`
+- audit: `[HUMANIZE_STRICT_AUDIT_MODEL_NAME, primary rewrite model]`
+- review: `[HUMANIZE_STRICT_REVIEW_MODEL_NAME, primary rewrite model]`
+
+Models in each list are tried in order; any exception moves to the next one. When all fail the call raises `LLMResponseError`. Every call uses `max_tokens=20000` and no temperature.
+
+LLM call budget per request with `openrouter`: 1 rewrite (or N parallel chunk calls) + 0-2 style repairs + 1 audit + 0-1 review. Fast mode runs all of this synchronously; there is no request timeout in Core.
 
 ## Environment Variables
 
-Lightsail Core uses:
+All settings live in `humanize_core/config.py` (`Settings`, loaded from env and `.env`). Defaults shown are the code defaults.
+
+Provider and models:
 
 ```text
-OPENAI_API_KEY or ANTHROPIC_API_KEY
-HUMANIZE_MODEL_PROVIDER
-HUMANIZE_MODEL_NAME
-HUMANIZE_CORE_API_KEY
-HUMANIZE_CORE_SIGNING_SECRET
+HUMANIZE_MODEL_PROVIDER=stub                     # stub | openai | anthropic | openrouter
+HUMANIZE_MODEL_NAME=stub                         # openai/anthropic model; for openrouter overrides the rewrite primary when not "stub"
+OPENAI_API_KEY                                   # required for provider=openai
+ANTHROPIC_API_KEY                                # required for provider=anthropic
+OPENROUTER_API_KEY                               # required for provider=openrouter
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_APP_TITLE=Dadeum Humanize Core        # sent as X-Title
+OPENROUTER_SITE_URL                              # optional, sent as HTTP-Referer
+HUMANIZE_REWRITE_MODEL_NAME=openai/gpt-5-mini    # alias: HUMANIZE_FAST_MODEL_NAME
+HUMANIZE_REWRITE_FALLBACK_MODEL_NAME=~anthropic/claude-haiku-latest
+HUMANIZE_STRICT_AUDIT_MODEL_NAME=~anthropic/claude-haiku-latest
+HUMANIZE_STRICT_REVIEW_MODEL_NAME=openai/gpt-5.4-mini
+```
+
+Security and limits:
+
+```text
+HUMANIZE_CORE_API_KEY=                           # empty -> every request is 401
+HUMANIZE_CORE_SIGNING_SECRET=                    # empty -> every request is 401
 HUMANIZE_MAX_CHARS=5000
-HUMANIZE_JOB_STORE_PATH
-HUMANIZE_JOB_ENCRYPTION_KEY
-HUMANIZE_JOB_RETENTION_SECONDS
+HUMANIZE_CHUNK_MIN_CHARS=1000                    # text at/above this is chunked
+HUMANIZE_CHUNK_TARGET_CHARS=1000
+HUMANIZE_STYLE_GATE_MAX_ROUNDS=2                 # 0 disables the style gate
+HUMANIZE_STYLE_GATE_S2_THRESHOLD=3
+```
+
+Strict job store and worker:
+
+```text
+HUMANIZE_JOB_STORE_PATH=humanize_jobs.sqlite3    # compose sets /data/humanize_jobs.sqlite3
+HUMANIZE_JOB_ENCRYPTION_KEY                      # 32-byte hex or base64url; falls back to sha256(HUMANIZE_CORE_SIGNING_SECRET)
+HUMANIZE_JOB_WORKER_ENABLED=true
+HUMANIZE_JOB_POLL_INTERVAL_SECONDS=1.0           # also drives pollAfterMs (min 250)
+HUMANIZE_JOB_LOCK_SECONDS=600                    # stale running jobs are reclaimed after this
+HUMANIZE_JOB_RETENTION_SECONDS=86400             # TTL for the job row and encrypted result
+HUMANIZE_JOB_MAX_ATTEMPTS=2
+```
+
+Debug logging:
+
+```text
 HUMANIZE_DEBUG_LOG_ENABLED=true
-HUMANIZE_DEBUG_LOG_DIR=/data/humanize-core/logs
+HUMANIZE_DEBUG_LOG_DIR=~/.dadeum/humanize-core/logs   # production .env sets /data/humanize-core/logs
 HUMANIZE_DEBUG_LOG_INCLUDE_PLAINTEXT=false
 ```
 
-Local tests may use:
+The signature timestamp tolerance (300 seconds) is a code constant, not an env var.
 
-```text
-HUMANIZE_MODEL_PROVIDER=stub
-HUMANIZE_MODEL_NAME=stub
-```
+The worker runs in-process inside the Uvicorn app (single asyncio task started in the FastAPI lifespan). The job store is SQLite in WAL mode; running more than one Core process against the same file is not designed for.
 
-OpenAI production calls should use the Responses API with strict JSON Schema
-structured output, not legacy `json_object` mode. The model should generate only
-`revisedText`, `changes`, and `summary`; Core should fill token usage from API
-response metadata.
+OpenAI calls use the Responses API with strict JSON Schema structured output, not legacy `json_object` mode. The model generates only `revisedText`, `changes`, and `summary`; Core fills token usage from API response metadata.
 
 ## Debug Logging
 
@@ -225,9 +324,9 @@ Core keeps step logs for rewrite debugging. The production Docker location is:
 /data/humanize-core/logs/YYYY-MM-DD.log
 ```
 
-These logs should make asynchronous job behavior debuggable by recording request/job ids, graph step names, per-step durations, statuses, token counts, warning/change counts, retry decisions, and error codes.
+These logs record request/job ids, graph step names, per-step durations, statuses, token counts, warning/change counts, retry decisions, and error codes. Fast requests log `api.rewrite.accepted / succeeded / failed`; strict jobs add `job.enqueued`, `job.claimed`, `job.processing.started`, `job.payload.loaded`, `job.succeeded`, `job.failed`, `job.cancelled`. Status polls are not logged.
 
-Default logging must redact plaintext source text, rewritten text, diff bodies, finding bodies, protected term values, user intent text, prompts, raw LLM request/response bodies, encrypted payload bytes, and decrypted job payload/result values. Log lengths/counts/statuses instead.
+Redaction is **key-name based** (`debug_log.py`): any detail key containing `text`, `source`, `revised`, `change`, `summary`, `warning`, `finding`, `diff`, `intent`, `protected`, `term`, `prompt`, `raw`, `body`, `payload`, `result`, `original`, `cipher`, `nonce` is replaced with `[REDACTED length=N]` unless the key is in the safe list or ends with a metric suffix (`_count`, `_length`, `_ms`, `_tokens`, ...). Callers deliberately pass plaintext under those keys (for example `source_text`, `revised_text`, `changes`) so the plaintext flag can switch them on. **When adding a new detail key that carries body text, make sure its name hits the blocklist**; a key like `draft` would leak. Any string value longer than 256 chars is also redacted regardless of key.
 
 For a temporary explicit debugging window, `HUMANIZE_DEBUG_LOG_INCLUDE_PLAINTEXT=true` may be enabled to include source text, rewritten text, summaries, warnings, and change/audit details in the text log. Turn it off after debugging, and never log raw LLM request/response bodies or encrypted payload bytes.
 
@@ -314,19 +413,25 @@ Strict async job storage may contain encrypted source payloads and encrypted fin
 
 ## Test Requirements
 
-Lightsail Core tests must cover:
+Lightsail Core tests (`tests/test_api.py`, 83 tests, all on the `stub` provider or fake LLM doubles) cover:
 
 - `/health` returns ok.
 - Missing or invalid API key returns `401`.
 - Missing or invalid HMAC returns `401`.
 - Expired timestamp returns `401`.
 - Body hash mismatch returns `401`.
-- Invalid enum returns `422`.
+- Invalid enum and unknown/legacy fields return `422` after auth passes.
 - Valid fast request returns structured `RewriteResponse`.
-- Strict request returns `202 Accepted` with a job id.
-- Strict job status returns result only after completion.
+- Strict request returns `202 Accepted` with a job id; `max_rounds` is ignored.
+- Strict job status returns result only after completion; store survives lifespan restart.
 - Strict job storage does not contain plaintext source text or rewritten text.
-- Logs do not include source text or rewritten text.
+- Logs do not include source text or rewritten text by default and do include them with the plaintext flag.
+- Prompt contents (rulebook, hints, tone guidance, completion contract).
+- Local detector rules and false-positive guards.
+- Graph routing: clean audit skips review; conditional/fail routes to review; truncated or reverting review falls back to local repair; style gate repairs and regressions; chunk split/reassembly.
+- Provider request shapes for OpenAI Responses, Anthropic Messages, and OpenRouter Chat Completions (schema normalisation, usage extraction, no temperature).
+
+Add to this list when you add behavior. Keep tests provider-free (no network).
 
 Next.js tests should cover:
 
@@ -358,4 +463,38 @@ cd services/humanize-core
 uv run --python 3.12 --with '.[dev]' pytest -q
 ```
 
+For prompt or rulebook changes, also run the golden-set eval before and after and compare (`scripts/eval_golden.py --baseline ...`, see the service README).
+
 Report any skipped verification clearly.
+
+## Repository Layout Notes
+
+```text
+services/humanize-core/
+  humanize_core/
+    api.py          FastAPI app, routes, error mapping
+    security.py     header/HMAC verification
+    config.py       Settings (all env vars)
+    schemas.py      public request/response models
+    graph.py        LangGraph pipeline (6 stages) + local audit/repair helpers
+    llm.py          provider adapters (stub / openai / anthropic / openrouter)
+    jobs.py         SQLite job store, AES-GCM cipher, in-process worker
+    debug_log.py    redacting daily text logger
+    diff.py         display-safe change rebuilding
+    im_not_ai/
+      audit.py         local regex detector (local_detect), severity scoring
+      preservation.py  exact preserve target extraction
+      prompts.py       all system/user prompts
+      resources.py     rulebook loader, compact rulebook, rule cards
+      resources/strict-rules.md   the active rulebook
+      schemas.py       internal structured-output models
+  scripts/
+    eval_golden.py            golden-set eval harness
+    strict_rewrite_probe.py   prepare->rewrite only, local diagnostics
+  evals/golden_set.json       32 fixed Korean cases
+  tests/test_api.py
+```
+
+Not used by the runtime graph (kept for reference/tests only): `im_not_ai/metrics.py`, `im_not_ai/metrics_v2.py`, `im_not_ai/baseline.json`, `im_not_ai/baseline_v2_diff.json`, `im_not_ai/resources/strict-rules-old.md`, and `llm.py::_system_prompt / _user_prompt`. Do not extend them; extend `graph.py` / `prompts.py` instead.
+
+The Dockerfile installs from `pyproject.toml` with `pip`, not from `uv.lock`, so production dependency versions float within the declared ranges.
