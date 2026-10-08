@@ -256,7 +256,7 @@ OpenRouter model selection (`llm.py::OpenRouterRewriteLLM`):
 - segment review: `[HUMANIZE_STRICT_REVIEW_MODEL_NAME, primary rewrite model]`
 - explain changes: `[HUMANIZE_EXPLAIN_MODEL_NAME if set, primary rewrite model]`
 
-Models in each list are tried in order; any exception moves to the next one. When all fail the call raises `LLMResponseError`. Every call uses `max_tokens=20000` and no temperature; `HUMANIZE_REASONING_EFFORT` (default `none`) adds the OpenRouter `reasoning: {effort}` block to every pipeline call.
+Models in each list are tried in order; any exception moves to the next one. When all fail the call raises `LLMResponseError`. Every call uses `max_tokens=20000` and no temperature; `HUMANIZE_REASONING_EFFORT` (default `none`) adds the OpenRouter `reasoning: {effort}` block to every pipeline call. As of 2026-10 Claude 5.5 via OpenRouter (BYOK Anthropic key) reported `reasoning_tokens=0` for every request shape, so the flag is inert for Claude; the medium run in `evals/reports/effort-medium.json` is effectively a repeat of the final config and documents the noise band (overall 4.17 vs 3.92, A/B 2-4-6 on identical settings).
 
 LLM call budget per request with `openrouter`: 1 rewrite (or N parallel chunk calls) + 0-2 style repairs + 1 audit + 0-1 segment review + 1 explain (skipped only when the text did not change). Fast mode runs all of this synchronously; there is no request timeout in Core.
 
