@@ -147,7 +147,7 @@ Fast synchronous Core requests and completed strict jobs return:
 }
 ```
 
-`changes[].original` and `changes[].revised` are guaranteed to be exact substrings of the request text and `revisedText`: `finalize` always rebuilds the list from a sequence diff of the two, attaching model reasons by location and asking the provider to explain the rest. At most 12 display changes are emitted; a 13th summary entry notes the overflow. `changes[].type` is one of `clarity | tone | concision | structure | grammar | meaning`; `riskLevel` is `low | medium | high`.
+`changes[].original` and `changes[].revised` are guaranteed to be exact substrings of the request text and `revisedText`: `finalize` always rebuilds the list from a sequence diff of the two, attaching model reasons by location and asking the provider to explain the rest. At most 30 display changes are emitted, in document order; when there are more, a 31st entry with empty snippets says how many were left out (the overflow note starts with `세부 변경 구간이`, which the eval harness keys on). `changes[].type` is one of `clarity | tone | concision | structure | grammar | meaning`; `riskLevel` is `low | medium | high`.
 
 Strict `POST /v1/rewrite` requests return `202 Accepted` with:
 

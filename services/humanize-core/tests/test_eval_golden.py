@@ -76,7 +76,7 @@ def test_change_list_quality_flags_fallback_unsafe_and_noop_changes():
             Change(original="프로젝트에 대해", revised="프로젝트를", reason="영어 about 직역이라 목적격 조사로 바꿨습니다.", type="clarity"),
             Change(original="일정은", revised="일정은", reason="원문과 최종 윤문 결과의 차이를 비교 가능한 구간으로 정리했습니다.", type="clarity"),
             Change(original="없는 구간", revised="일정", reason="", type="clarity"),
-            Change(original="", revised="", reason="세부 변경 구간이 14건이라 주요 12건만 비교 표시에 사용했습니다.", type="clarity"),
+            Change(original="", revised="", reason="세부 변경 구간이 34건이라 앞에서부터 30건까지만 표시했습니다. 나머지 4건은 윤문 결과에는 반영되어 있습니다.", type="clarity"),
         ],
     )
 

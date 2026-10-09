@@ -2930,3 +2930,24 @@ def test_display_changes_diff_whole_words_not_characters():
     assert "일이지만" not in changes[1].original
     for change in changes:
         assert change.original in original and change.revised in revised
+
+
+def test_display_changes_cap_at_thirty_in_document_order_with_overflow_note():
+    from humanize_core.diff import build_display_safe_changes
+
+    sentences = [f"항목 {index}번은 데이터에 대해 검토를 진행합니다." for index in range(1, 35)]
+    original = " ".join(sentences)
+    revised = " ".join(sentence.replace("데이터에 대해 검토를 진행합니다", "데이터를 검토합니다") for sentence in sentences)
+
+    changes = build_display_safe_changes(original, revised, [])
+
+    shown = [change for change in changes if change.original]
+    notes = [change for change in changes if not change.original and not change.revised]
+    assert len(shown) == 30
+    assert len(notes) == 1
+    positions = [original.index(change.original) for change in shown]
+    assert positions == sorted(positions)
+    assert "항목 34번" not in original[: positions[-1] + len(shown[-1].original)]
+    assert all(change.original in original and change.revised in revised for change in shown)
+    assert notes[0].reason.startswith("세부 변경 구간이 34건이라 앞에서부터 30건까지만 표시했습니다.")
+    assert "나머지 4건" in notes[0].reason

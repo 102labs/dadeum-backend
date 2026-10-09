@@ -4,7 +4,9 @@ from difflib import SequenceMatcher
 from humanize_core.schemas import Change
 
 _DISPLAY_CONTEXT_CHARS = 14
-_MAX_DISPLAY_CHANGES = 12
+# Diff groups are shown in document order up to this many; the rest are
+# summarised in one trailing note so the comparison UI stays bounded.
+_MAX_DISPLAY_CHANGES = 30
 # Edits separated by at most this much unchanged text (a space or one short
 # token) are shown as one change; anything further apart is a separate edit
 # with its own reason.
@@ -102,7 +104,7 @@ def _build_sequence_changes(original: str, revised: str, seed_changes: list[Chan
             Change(
                 original="",
                 revised="",
-                reason=f"세부 변경 구간이 {len(grouped_opcodes)}건이라 주요 {_MAX_DISPLAY_CHANGES}건만 비교 표시에 사용했습니다.",
+                reason=f"세부 변경 구간이 {len(grouped_opcodes)}건이라 앞에서부터 {_MAX_DISPLAY_CHANGES}건까지만 표시했습니다. 나머지 {len(grouped_opcodes) - _MAX_DISPLAY_CHANGES}건은 윤문 결과에는 반영되어 있습니다.",
                 type="clarity",
                 riskLevel="low",
             )
