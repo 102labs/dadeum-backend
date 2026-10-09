@@ -666,7 +666,7 @@ def test_rewrite_prompt_runs_active_rulebook_single_pass():
     assert "20~40%" not in rendered_payload
     assert "must_report" not in payload
     assert any("룰 번호" in item for item in payload["changes_contract"])
-    assert any("40~80자" in item for item in payload["changes_contract"])
+    assert any("15~40자" in item for item in payload["changes_contract"])
     assert "summary_contract" in payload
     assert "charCountAfter" not in rendered_payload
 
@@ -2951,3 +2951,48 @@ def test_display_changes_cap_at_thirty_in_document_order_with_overflow_note():
     assert all(change.original in original and change.revised in revised for change in shown)
     assert notes[0].reason.startswith("세부 변경 구간이 34건이라 앞에서부터 30건까지만 표시했습니다.")
     assert "나머지 4건" in notes[0].reason
+
+
+def test_display_snippets_never_cross_a_paragraph_break():
+    from humanize_core.diff import build_display_safe_changes
+
+    original = "첫 문단의 마지막 문장을 통해 설명했다.\n\n그리고 두 번째 문단은 이렇게 시작한다. 셋째 문장은 통째로 사라진다.\n\n다음 문단이다."
+    revised = "첫 문단의 마지막 문장으로 설명했다.\n\n두 번째 문단은 이렇게 시작한다.\n\n다음 문단이다."
+
+    changes = build_display_safe_changes(original, revised, [])
+
+    assert [change.original for change in changes] == [
+        "첫 문단의 마지막 문장을 통해 설명했다.",
+        "그리고 두 번째 문단은 이렇게",
+        "문단은 이렇게 시작한다. 셋째 문장은 통째로 사라진다.",
+    ]
+    assert [change.revised for change in changes] == [
+        "첫 문단의 마지막 문장으로 설명했다.",
+        "두 번째 문단은 이렇게",
+        "문단은 이렇게 시작한다.",
+    ]
+    for change in changes:
+        assert "\n" not in change.original and "\n" not in change.revised
+        assert change.original in original and change.revised in revised
+        assert change.original == change.original.strip() and change.revised == change.revised.strip()
+
+
+def test_explain_prompt_asks_for_short_reasons_without_preservation_filler():
+    from humanize_core.im_not_ai.prompts import CHANGES_CONTRACT, explain_changes_user_prompt
+
+    request = RewriteRequestForTest(text="이번 프로젝트에 대해 공유드립니다.")
+    payload = json.loads(
+        explain_changes_user_prompt(
+            request,
+            "이번 프로젝트를 공유드립니다.",
+            [{"index": 0, "original": "프로젝트에 대해", "revised": "프로젝트를", "draft_reason": ""}],
+        )
+    )
+
+    contract = "\n".join(CHANGES_CONTRACT)
+    assert "15~40자" in contract
+    assert "40~80자" not in contract
+    assert "사실관계는 그대로다" in contract
+    output_contract = "\n".join(payload["output_contract"])
+    assert "15~40자" in output_contract
+    assert "조각에 없는 표현은 인용하지 않는다" in output_contract

@@ -89,6 +89,8 @@ def _build_sequence_changes(original: str, revised: str, seed_changes: list[Chan
         original_start, original_end, revised_start, revised_end = _expand_group(
             original, revised, raw_group, previous=previous, following=following
         )
+        if original_start == original_end and revised_start == revised_end:
+            continue  # whitespace-only edit: nothing to show
         generated.append(
             Change(
                 original=original[original_start:original_end],
@@ -282,12 +284,44 @@ def _expand_group(
     if following is not None:
         suffix = min(suffix, following[0] - original_end, following[2] - revised_end)
     suffix = _shrink_to_boundary_right(original, original_end, original_end + suffix)
-    return (
-        original_start - prefix,
-        original_end + suffix,
-        revised_start - prefix,
-        revised_end + suffix,
+    # Context never crosses a line break: a snippet is one phrase inside one
+    # paragraph, not the tail of this paragraph plus the head of the next.
+    prefix = _cut_at_newline_left(original, original_start, prefix)
+    suffix = _cut_at_newline_right(original, original_end, suffix)
+    return _trim_edges(
+        original,
+        revised,
+        (original_start - prefix, original_end + suffix, revised_start - prefix, revised_end + suffix),
     )
+
+
+def _cut_at_newline_left(text: str, anchor: int, prefix: int) -> int:
+    newline = text.rfind("\n", anchor - prefix, anchor)
+    return anchor - newline - 1 if newline >= 0 else prefix
+
+
+def _cut_at_newline_right(text: str, anchor: int, suffix: int) -> int:
+    newline = text.find("\n", anchor, anchor + suffix)
+    return newline - anchor if newline >= 0 else suffix
+
+
+def _trim_edges(
+    original: str,
+    revised: str,
+    group: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    """Drop leading/trailing whitespace (including line breaks that belong to
+    the edit itself) from both snippets; they stay exact substrings."""
+    original_start, original_end, revised_start, revised_end = group
+    while original_start < original_end and original[original_start].isspace():
+        original_start += 1
+    while original_end > original_start and original[original_end - 1].isspace():
+        original_end -= 1
+    while revised_start < revised_end and revised[revised_start].isspace():
+        revised_start += 1
+    while revised_end > revised_start and revised[revised_end - 1].isspace():
+        revised_end -= 1
+    return original_start, original_end, revised_start, revised_end
 
 
 def _shrink_to_boundary_left(text: str, start: int, anchor: int) -> int:
