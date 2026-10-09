@@ -143,59 +143,8 @@ class HumanizeContext(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Model-facing output schemas. These are what the structured-output request
-# actually asks the model to produce: only the fields the graph consumes.
-# Internal bookkeeping (token usage, quality grades, residual findings) lives
-# on the *Result models above and is filled in by code, never by the model.
-
-
-class RewriteOutput(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    revisedText: str
-    changes: list[Change]
-    summary: list[str]
-    warnings: list[str] = Field(default_factory=list)
-
-
-class AuditOutput(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    status: AuditStatus
-    reason: str
-    warnings: list[str] = Field(default_factory=list)
-    flaggedEdits: list[FlaggedEdit] = Field(default_factory=list)
-
-
-class ReviewSegment(BaseModel):
-    """One draft sentence the audit flagged, with the corrections to apply."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    index: int
-    draft_sentence: str
-    original_sentence: str = ""
-    corrections: list[FlaggedEdit] = Field(default_factory=list)
-
-
-class RepairedSegment(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    index: int
-    text: str
-
-
-class SegmentReviewOutput(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    repairedSegments: list[RepairedSegment]
-    unresolved: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-
-
-class SegmentReviewResult(SegmentReviewOutput):
-    inputTokens: int = 0
-    outputTokens: int = 0
+# Explain-changes output schema: only the fields the graph consumes. Token
+# usage lives on ChangeExplanationResult and is filled in by code.
 
 
 class ChangeExplanation(BaseModel):

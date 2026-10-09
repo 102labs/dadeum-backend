@@ -151,17 +151,15 @@ prepare -> rewrite -> style_gate -> audit -> (review) -> finalize
   terms, quotes, URLs, emails, code spans, dates, numbers/units must not go
   down or up). The OpenRouter provider adds a model audit for harmful meaning
   changes. Completion warnings force `fail`.
-- `review` (only when audit is `fail` or flags a blocking edit): the graph
-  locates the draft sentence each blocking edit points at and sends only those
-  sentences (with the matching original sentence and the corrections) to the
-  provider's `review_segments`; repaired sentences are spliced back. Advisory
-  flags become response warnings instead of a review pass. Edits that cannot
-  be located, providers without `review_segments`, and spliced output that
-  truncates the text or damages preserved values fall back to the local repair
-  path with a warning. Style restores that would reintroduce an S1 violation
-  are kept as the gated draft. A truncated draft is never regenerated.
+- `review` (when audit is `fail` or `conditional_pass`, or any flagged edit
+  needs repair): the provider's `review` receives the full draft plus the
+  audit record and returns the complete repaired passage. The output is
+  re-checked locally and replaced by the local repair path if it truncated the
+  text, damaged more preserved values, or reverted the draft wholesale to the
+  source. Providers without `review` use the local repair path. Style restores
+  that would reintroduce an S1 violation are kept as the gated draft.
 - `finalize`: merge warnings, build `changes` from a sequence diff of source vs.
-  result (exact substrings cut at word boundaries, max 12), attach each model
+  result (exact substrings cut at word boundaries inside one paragraph, max 30), attach each model
   reason to at most one group by location, then ask the provider's
   `explain_changes` (model: `HUMANIZE_EXPLAIN_MODEL_NAME`, else the rewrite
   primary) to write the user-facing reason/type/riskLevel for every group and
@@ -169,12 +167,12 @@ prepare -> rewrite -> style_gate -> audit -> (review) -> finalize
 
 Provider capability matrix:
 
-| provider     | rewrite | style_repair | model audit | segment review | explain changes |
-|--------------|---------|--------------|-------------|----------------|-----------------|
-| `stub`       | local   | no           | local only  | local only     | no              |
-| `openai`     | yes     | no           | local only  | local only     | no              |
-| `anthropic`  | yes     | no           | local only  | local only     | no              |
-| `openrouter` | yes     | yes          | yes         | yes            | yes             |
+| provider     | rewrite | style_repair | model audit | model review | explain changes |
+|--------------|---------|--------------|-------------|--------------|-----------------|
+| `stub`       | local   | no           | local only  | local only   | no              |
+| `openai`     | yes     | no           | local only  | local only   | no              |
+| `anthropic`  | yes     | no           | local only  | local only   | no              |
+| `openrouter` | yes     | yes          | yes         | yes          | yes             |
 
 The OpenAI provider uses the Responses API with strict JSON Schema structured
 output for `revisedText`, `changes`, and `summary`. Usage metrics come from the
@@ -183,16 +181,16 @@ provider response metadata, not from model-generated JSON.
 The OpenRouter provider uses Chat Completions with `response_format:
 json_schema` (`strict: true`, schema normalised to `additionalProperties:
 false` with every property required) for rewrite, style repair, audit,
-segment review, and change explanation. The schemas sent are the slim
-`*Output` models (no token/quality bookkeeping fields); `Change` field
-descriptions ride inside the schema. It sets `provider.require_parameters: true` and sends no temperature.
+review, and change explanation. Rewrite/style-repair/audit/review send the
+full `*Result` models; only the explain call sends a slim output schema.
+`Change` field descriptions ride inside the schema. It sets `provider.require_parameters: true` and sends no temperature.
 Model lists are tried in order and fall through on any exception: rewrite and
 style repair use `[rewrite, rewrite fallback]`, audit `[audit, rewrite]`,
 review `[review, rewrite]`. When `HUMANIZE_MODEL_NAME` is set to anything but
 `stub` it replaces the rewrite primary. Every call uses `max_tokens=20000`.
 
 Per-request LLM budget with OpenRouter: 1 rewrite (or N chunk calls) + 0-2
-style repairs + 1 audit + 0-1 segment review + 0-1 explain. Fast mode waits for all of it; Core sets
+style repairs + 1 audit + 0-1 review + 0-1 explain. Fast mode waits for all of it; Core sets
 no request timeout.
 
 ## Golden-Set Eval

@@ -4,7 +4,7 @@ from typing import Any
 
 from humanize_core.im_not_ai.preservation import exact_preserve_targets as build_exact_preserve_targets
 from humanize_core.im_not_ai.resources import compact_strict_rules, rule_card
-from humanize_core.im_not_ai.schemas import AuditResult, ReviewSegment
+from humanize_core.im_not_ai.schemas import AuditResult
 from humanize_core.schemas import RewriteRequest
 
 
@@ -13,6 +13,7 @@ _REWRITE_STRUCTURED_OUTPUT_CONTRACT = [
     "Never put a partial prefix, continuation stub, excerpt, or dangling clause in revisedText.",
     "changes[].original and changes[].revised are local diff snippets only. Do not put the full passage in changes[].revised unless the entire passage truly changed as one unit.",
     "If revisedText and changes[].revised disagree, the response is invalid. Copy the complete final passage into revisedText before returning JSON.",
+    "charCountAfter must match revisedText length, not the length of a change snippet.",
     "summary may describe what changed, but it must not be the only place that contains the completed rewrite.",
 ]
 CHANGES_CONTRACT = [
@@ -91,8 +92,11 @@ def rewrite_user_prompt(request: RewriteRequest, context: dict[str, Any]) -> str
             "원문에 없는 사실·예시·비유·근거·과한 마케팅 문구 추가 없음",
             "user_intent, tone, preserve_formatting 반영",
         ],
-        "changes_contract": CHANGES_CONTRACT,
-        "summary_contract": SUMMARY_CONTRACT,
+        "must_report": [
+            "qualityLevel: A/B/C/D",
+            "rollbackRequired: 진단 신호일 뿐 rewrite 단계에서 원문으로 되돌리지 않는다. 의미 보존 실패, 누락, 출력 잘림, 보존 대상 변경이 의심될 때만 true",
+            "settingsApplied: user_intent, tone, preserve_formatting 반영 여부",
+        ],
         "completion_contract": _completion_contract(request),
         "text": request.text,
     }
@@ -173,38 +177,41 @@ def audit_user_prompt(
 
 def review_system_prompt() -> str:
     return (
-        "You are the preservation repair step for Korean business rewriting. "
-        "You receive only the draft sentences that a fidelity audit flagged, each with the matching original "
-        "sentence and the corrections to apply. Repair each listed sentence so that the flagged numbers, dates, "
-        "names, quotations, protected terms, claims, causal links, polarity, and modality match the original again, "
-        "while keeping every other improvement in the draft sentence. "
-        "Never restore a removed AI-tell idiom just because it was in the original; restore the meaning, not the wording. "
-        "Return one repaired text per segment index. Do not touch sentences that were not listed, do not merge or split "
-        "segments, and do not add new information. Return only JSON matching the schema."
+        "You are the final preservation repair step for Korean business rewriting. "
+        "Start from the draft rewrite and apply only the audit correction directions. "
+        "Restore original numbers, dates, units, names, protected terms, direct quotations, URLs, code, legal clauses, claims, causal relations, order, polarity, and missing key phrases exactly where the audit flagged them. "
+        "Do not perform new style polishing or rewrite unflagged sentences. "
+        "Return the complete final revised passage and only the local changes you actually repaired. "
+        "Return only JSON matching the schema."
     )
 
 
 def review_user_prompt(
     request: RewriteRequest,
-    segments: list[ReviewSegment],
+    context: dict[str, Any],
+    revised_text: str,
     audit_result: AuditResult,
 ) -> str:
     payload = {
         **_prompt_header("review", request),
-        "repair_routine": [
-            "1) 각 segment의 corrections를 draft_sentence에 반영한다. original_sentence는 참고용이다.",
-            "2) 수치·날짜·단위·고유명사·직접 인용·protected_terms는 원문 표기를 글자 단위로 복원한다.",
-            "3) 추론·권고·가능성 같은 양태가 사라졌다면 양태만 되살린다. 삭제된 상투구를 되살리거나 원문 문장을 통째로 복사하지 않는다.",
-            "4) corrections에 없는 표현은 draft_sentence 그대로 둔다.",
-            "5) 안전하게 고칠 수 없으면 그 index는 repairedSegments에서 빼고 unresolved에 이유를 적는다.",
+        "fixed_review_routine": [
+            "1) preservation_audit.flaggedEdits의 수정 지시를 먼저 반영한다.",
+            "2) flaggedEdits에 없는 문장, 문체, 연결, 리듬은 새로 고치지 않는다.",
+            "3) 수치·날짜·단위·고유명사·직접 인용·protected_terms는 원문 표기를 글자 단위로 복원한다.",
+            "4) 누락, 새 정보 추가, 주장 방향, 인과관계, 순서, 긍정·부정 극성, 양화·한정이 바뀐 부분만 원문에 가깝게 복원한다.",
+            "5) 수정이 안전하지 않으면 해당 문장만 원문 표현을 유지한다.",
         ],
-        "output_contract": [
-            "repairedSegments[].index는 입력 segment의 index와 같아야 한다.",
-            "repairedSegments[].text는 그 문장 하나의 완성본이다. 앞뒤 문장을 붙이지 않는다.",
+        "preservation_audit": audit_result.model_dump(),
+        "review_contract": [
+            "revisedText에는 최종 완성본 전체를 넣는다. 부분 문장, 이어쓰기, 요약은 실패다.",
+            "changes는 audit 지시를 반영해 실제 복원한 로컬 변경만 기록한다.",
+            "auditCorrectionsApplied에는 preservation_audit 지시 중 반영한 항목을 요약한다.",
+            "finalAuditStatus는 audit 지시를 모두 반영했으면 full_pass로 둔다.",
+            "finalBlockingIssues에는 audit 지시를 반영하지 못한 항목만 적는다.",
         ],
-        "audit_summary": {"status": audit_result.status, "reason": audit_result.reason},
         "exact_preserve_targets": exact_preserve_targets(request),
-        "segments": [segment.model_dump() for segment in segments],
+        "original_text": request.text,
+        "draft_revised_text": revised_text,
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -431,7 +438,6 @@ def style_repair_user_prompt(
             "수리하지 않는 단어와 문장은 draft_text와 글자 단위로 동일하게 유지한다. 새 오타나 용어 변형을 만들지 않는다.",
             "changes에는 실제 수리한 로컬 변경만 기록한다.",
         ],
-        "changes_contract": CHANGES_CONTRACT,
         "residual_rule_hints": [
             rulebook_hint_payload(item) for item in residual_hints[:_MAX_PROMPT_HINTS] if isinstance(item, dict)
         ],
