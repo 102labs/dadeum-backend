@@ -6,8 +6,11 @@ from humanize_core.diff import build_fallback_changes, squeeze_spaces
 from humanize_core.im_not_ai import prompts
 from humanize_core.im_not_ai.schemas import (
     AuditResult,
+    ChangeExplanationItemsOutput,
     ChangeExplanationOutput,
     ChangeExplanationResult,
+    ChangeSummaryOutput,
+    ChangeSummaryResult,
     HumanizeContext,
     RewriteResult,
     StrictReviewResult,
@@ -150,6 +153,8 @@ TStructuredOutput = TypeVar(
     AuditResult,
     StrictReviewResult,
     ChangeExplanationOutput,
+    ChangeExplanationItemsOutput,
+    ChangeSummaryOutput,
 )
 
 
@@ -268,16 +273,38 @@ class OpenRouterRewriteLLM:
         request: RewriteRequest,
         revised_text: str,
         items: list[dict[str, Any]],
+        *,
+        with_summary: bool = True,
     ) -> ChangeExplanationResult:
         output, input_tokens, output_tokens = await self._chat_structured(
             models=self.explain_models,
             schema_name="change_explanations",
-            output_type=ChangeExplanationOutput,
-            system=prompts.explain_changes_system_prompt(),
-            user=prompts.explain_changes_user_prompt(request, revised_text, items),
+            output_type=ChangeExplanationOutput if with_summary else ChangeExplanationItemsOutput,
+            system=prompts.explain_changes_system_prompt(with_summary),
+            user=prompts.explain_changes_user_prompt(request, revised_text, items, with_summary),
             max_tokens=MAX_OUTPUT_TOKENS,
         )
         return ChangeExplanationResult(
+            **output.model_dump(),
+            inputTokens=input_tokens,
+            outputTokens=output_tokens,
+        )
+
+    async def summarize_changes(
+        self,
+        request: RewriteRequest,
+        revised_text: str,
+        items: list[dict[str, Any]],
+    ) -> ChangeSummaryResult:
+        output, input_tokens, output_tokens = await self._chat_structured(
+            models=self.explain_models,
+            schema_name="change_summary",
+            output_type=ChangeSummaryOutput,
+            system=prompts.summarize_changes_system_prompt(),
+            user=prompts.summarize_changes_user_prompt(request, revised_text, items),
+            max_tokens=MAX_OUTPUT_TOKENS,
+        )
+        return ChangeSummaryResult(
             **output.model_dump(),
             inputTokens=input_tokens,
             outputTokens=output_tokens,

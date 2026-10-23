@@ -31,6 +31,8 @@ from humanize_core.im_not_ai.metrics_v2 import (
 from humanize_core.im_not_ai.schemas import (
     AuditResult,
     ChangeExplanationResult,
+    ChangeSummaryResult,
+    FlaggedEdit,
     RewriteResult,
     StrictReviewResult,
 )
@@ -2540,6 +2542,231 @@ async def test_finalize_keeps_generic_reason_when_explain_call_fails():
     assert [change.reason for change in response.changes] == [UNEXPLAINED_CHANGE_REASON]
 
 
+class _StageEvents:
+    def __init__(self):
+        self.events = []
+
+    def event(self, event, **kwargs):
+        self.events.append({"event": event, **kwargs})
+
+    def details(self, step):
+        return next(
+            item["details"]
+            for item in self.events
+            if item["event"] == "graph.stage.succeeded" and item.get("step") == step
+        )
+
+
+def _explanation_for(items, label):
+    from humanize_core.im_not_ai.schemas import ChangeExplanation
+
+    return [
+        ChangeExplanation(index=item["index"], reason=f"{label} {item['index']}: 구간을 다듬었습니다.", type="grammar", riskLevel="low")
+        for item in items
+    ]
+
+
+async def test_explain_runs_alongside_a_passing_audit_and_is_reused():
+    original = "이번 프로젝트에 대해 공유드립니다."
+    revised = "이번 프로젝트를 공유드립니다."
+    explain_started = asyncio.Event()
+    explained_texts = []
+
+    class ConcurrentLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            return RewriteResult(revisedText=revised, changes=[], summary=["초안입니다."])
+
+        async def audit(self, request, context, revised_text, changes):
+            # A graph that explains only after the audit would time out here.
+            await asyncio.wait_for(explain_started.wait(), timeout=1)
+            return AuditResult(status="full_pass", reason="통과")
+
+        async def explain_changes(self, request, revised_text, items):
+            explained_texts.append(revised_text)
+            explain_started.set()
+            return ChangeExplanationResult(items=_explanation_for(items, "설명"), summary=["설명 요약입니다."])
+
+    events = _StageEvents()
+    runner = RewriteGraphRunner(_settings(), ConcurrentLLM(), events)
+    request = RewriteRequestForTest.model_validate(_payload(text=original, protected_terms=[]))
+    response = await runner.run(request)
+
+    assert explained_texts == [revised]
+    assert [change.reason for change in response.changes] == ["설명 0: 구간을 다듬었습니다."]
+    assert response.summary == ["설명 요약입니다."]
+    assert events.details("audit")["explain_prefetch_started"] is True
+    assert events.details("audit")["explain_prefetch_cancelled"] is False
+    assert events.details("finalize")["explain_prefetched"] is True
+    assert runner._explain_prefetch == {}
+
+
+async def test_review_cancels_the_draft_explanation_and_explains_the_final_text():
+    original = "이번 프로젝트에 대해 간략히 공유드립니다."
+    draft = "이번 프로젝트를 짧게 공유드립니다."
+    final = "이번 프로젝트를 간략히 공유드립니다."
+    explain_started = asyncio.Event()
+    explained_texts = []
+    timeline = []
+
+    class ReviewingLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            return RewriteResult(revisedText=draft, changes=[], summary=["초안입니다."])
+
+        async def audit(self, request, context, revised_text, changes):
+            await asyncio.wait_for(explain_started.wait(), timeout=1)
+            return AuditResult(
+                status="conditional_pass",
+                flaggedEdits=[
+                    FlaggedEdit(
+                        before="간략히",
+                        after="짧게",
+                        issue="표현 강도가 달라졌습니다.",
+                        action="rewrite_required",
+                        severity="high",
+                    )
+                ],
+                reason="복원 필요",
+            )
+
+        async def review(self, request, context, revised_text, audit_result):
+            timeline.append("review")
+            return StrictReviewResult(revisedText=final, changes=[], summary=["검토했습니다."])
+
+        async def explain_changes(self, request, revised_text, items):
+            explained_texts.append(revised_text)
+            if revised_text == draft:
+                explain_started.set()
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    timeline.append("draft explanation cancelled")
+                    raise
+            return ChangeExplanationResult(items=_explanation_for(items, "최종"), summary=["최종 요약입니다."])
+
+    events = _StageEvents()
+    runner = RewriteGraphRunner(_settings(), ReviewingLLM(), events)
+    request = RewriteRequestForTest.model_validate(_payload(text=original, protected_terms=[]))
+    response = await runner.run(request)
+
+    assert response.revisedText == final
+    assert explained_texts == [draft, final]
+    # The draft explanation stops as soon as the audit asks for review.
+    assert timeline == ["draft explanation cancelled", "review"]
+    assert [change.reason for change in response.changes] == ["최종 0: 구간을 다듬었습니다."]
+    assert events.details("audit")["explain_prefetch_cancelled"] is True
+    assert events.details("finalize")["explain_prefetched"] is False
+    assert runner._explain_prefetch == {}
+
+
+_SIX_CHANGE_ORIGINAL = " ".join(
+    f"{ordinal} 문장에 대해 씁니다." for ordinal in ("첫째", "둘째", "셋째", "넷째", "다섯째", "여섯째")
+)
+_SIX_CHANGE_REVISED = _SIX_CHANGE_ORIGINAL.replace("문장에 대해", "문장을")
+
+
+async def test_explain_splits_many_changes_into_parallel_batches_with_one_summary_call():
+    batch_calls = []
+    summary_calls = []
+    all_started = asyncio.Event()
+
+    async def wait_for_all_calls():
+        # Two batches plus the summary call; sequential calls would time out.
+        if len(batch_calls) + len(summary_calls) == 3:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=1)
+
+    class BatchingLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            return RewriteResult(revisedText=_SIX_CHANGE_REVISED, changes=[], summary=["초안입니다."], inputTokens=10, outputTokens=5)
+
+        async def explain_changes(self, request, revised_text, items, *, with_summary=True):
+            batch_calls.append(([item["index"] for item in items], with_summary))
+            await wait_for_all_calls()
+            return ChangeExplanationResult(items=_explanation_for(items, "묶음"), inputTokens=7, outputTokens=2)
+
+        async def summarize_changes(self, request, revised_text, items):
+            summary_calls.append([item["index"] for item in items])
+            await wait_for_all_calls()
+            return ChangeSummaryResult(summary=["조사를 바로 이었습니다."], inputTokens=4, outputTokens=1)
+
+    events = _StageEvents()
+    runner = RewriteGraphRunner(_settings(explain_batch_size=4), BatchingLLM(), events)
+    request = RewriteRequestForTest.model_validate(_payload(text=_SIX_CHANGE_ORIGINAL, protected_terms=[]))
+    response = await runner.run(request)
+
+    assert sorted(batch_calls) == [([0, 1, 2], False), ([3, 4, 5], False)]
+    assert summary_calls == [[0, 1, 2, 3, 4, 5]]
+    assert [change.reason for change in response.changes] == [
+        f"묶음 {index}: 구간을 다듬었습니다." for index in range(6)
+    ]
+    assert response.summary == ["조사를 바로 이었습니다."]
+    assert response.usage.inputTokens == 10 + 7 + 7 + 4
+    assert response.usage.outputTokens == 5 + 2 + 2 + 1
+    assert events.details("finalize")["explain_batch_count"] == 2
+    assert events.details("finalize")["explain_failed_batch_count"] == 0
+
+
+async def test_failed_explain_batch_keeps_generic_reasons_for_its_items_only():
+    from humanize_core.diff import UNEXPLAINED_CHANGE_REASON
+
+    class PartlyFailingLLM:
+        async def rewrite(self, request):
+            raise AssertionError("graph should call rewrite_once")
+
+        async def rewrite_once(self, request, context):
+            return RewriteResult(revisedText=_SIX_CHANGE_REVISED, changes=[], summary=["초안입니다."])
+
+        async def explain_changes(self, request, revised_text, items, *, with_summary=True):
+            if items[0]["index"] == 0:
+                raise LLMResponseError("batch failed")
+            return ChangeExplanationResult(items=_explanation_for(items, "묶음"))
+
+        async def summarize_changes(self, request, revised_text, items):
+            raise LLMResponseError("summary failed")
+
+    events = _StageEvents()
+    runner = RewriteGraphRunner(_settings(explain_batch_size=4), PartlyFailingLLM(), events)
+    request = RewriteRequestForTest.model_validate(_payload(text=_SIX_CHANGE_ORIGINAL, protected_terms=[]))
+    response = await runner.run(request)
+
+    assert [change.reason for change in response.changes] == [
+        UNEXPLAINED_CHANGE_REASON,
+        UNEXPLAINED_CHANGE_REASON,
+        UNEXPLAINED_CHANGE_REASON,
+        "묶음 3: 구간을 다듬었습니다.",
+        "묶음 4: 구간을 다듬었습니다.",
+        "묶음 5: 구간을 다듬었습니다.",
+    ]
+    # The summary call failed, so the stage summary stays.
+    assert response.summary == ["초안입니다."]
+    assert events.details("finalize")["explain_failed"] is False
+    assert events.details("finalize")["explain_failed_batch_count"] == 1
+
+
+def test_explain_batches_are_even_and_contiguous():
+    from humanize_core.graph import _explain_batches
+
+    def sizes(count, batch_size):
+        batches = _explain_batches([{"index": index} for index in range(count)], batch_size)
+        assert [item["index"] for batch in batches for item in batch] == list(range(count))
+        return [len(batch) for batch in batches]
+
+    assert sizes(4, 4) == [4]
+    assert sizes(6, 4) == [3, 3]
+    assert sizes(19, 4) == [4, 4, 4, 4, 3]
+    assert sizes(30, 4) == [4, 4, 4, 4, 4, 4, 3, 3]
+    assert sizes(6, 0) == [6]
+
+
 def test_display_changes_use_each_model_reason_once():
     from humanize_core.diff import UNEXPLAINED_CHANGE_REASON, build_display_safe_changes
 
@@ -2687,6 +2914,89 @@ def test_explain_prompt_asks_for_short_reasons_without_preservation_filler():
     output_contract = "\n".join(payload["output_contract"])
     assert "15~40자" in output_contract
     assert "조각에 없는 표현은 인용하지 않는다" in output_contract
+
+
+def test_batched_explain_prompt_leaves_the_summary_to_the_summary_call():
+    from humanize_core.im_not_ai.prompts import (
+        SUMMARY_CONTRACT,
+        explain_changes_system_prompt,
+        explain_changes_user_prompt,
+        summarize_changes_user_prompt,
+    )
+
+    request = RewriteRequestForTest(text="이번 프로젝트에 대해 공유드립니다.")
+    revised = "이번 프로젝트를 공유드립니다."
+    items = [{"index": 0, "original": "프로젝트에 대해", "revised": "프로젝트를", "draft_reason": ""}]
+
+    batch = json.loads(explain_changes_user_prompt(request, revised, items, with_summary=False))
+    assert "summary_contract" not in batch
+    assert not any("summary" in rule for rule in batch["output_contract"])
+    assert batch["items"] == items
+    assert "summary" not in explain_changes_system_prompt(with_summary=False)
+    assert "summary" in explain_changes_system_prompt()
+
+    summary = json.loads(summarize_changes_user_prompt(request, revised, items))
+    assert summary["summary_contract"] == SUMMARY_CONTRACT
+    assert any("summary" in rule for rule in summary["output_contract"])
+    assert summary["items"] == items
+    assert summary["original_text"] == request.text
+    assert summary["revised_text"] == revised
+
+
+async def test_openrouter_batch_explain_and_summary_use_slim_schemas(monkeypatch):
+    calls = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs["response_format"]["json_schema"]["name"] == "change_summary":
+                content = {"summary": ["조사를 바로 이었습니다."]}
+            else:
+                content = {"items": [{"index": 0, "reason": "'에 대해'를 뺐습니다.", "type": "grammar", "riskLevel": "low"}]}
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(content, ensure_ascii=False)))],
+                usage=SimpleNamespace(prompt_tokens=5, completion_tokens=3),
+            )
+
+    class FakeChat:
+        def __init__(self):
+            self.completions = FakeCompletions()
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = FakeChat()
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
+
+    llm = OpenRouterRewriteLLM(
+        api_key="or-key",
+        base_url="https://openrouter.ai/api/v1",
+        app_title="Test App",
+        site_url=None,
+        model_name="stub",
+        rewrite_model_name="anthropic/claude-sonnet-5.5",
+        rewrite_fallback_model_name="anthropic/claude-haiku-5.5",
+        strict_audit_model_name="anthropic/claude-haiku-5.5",
+        strict_review_model_name="anthropic/claude-haiku-5.5",
+        explain_model_name="anthropic/claude-sonnet-5.5",
+    )
+    request = RewriteRequestForTest(text="이번 프로젝트에 대해 공유드립니다.")
+    items = [{"index": 0, "original": "프로젝트에 대해", "revised": "프로젝트를", "draft_reason": ""}]
+
+    batch = await llm.explain_changes(request, "이번 프로젝트를 공유드립니다.", items, with_summary=False)
+    summary = await llm.summarize_changes(request, "이번 프로젝트를 공유드립니다.", items)
+
+    assert [item.index for item in batch.items] == [0]
+    assert batch.summary == []
+    assert (batch.inputTokens, batch.outputTokens) == (5, 3)
+    assert summary.summary == ["조사를 바로 이었습니다."]
+    assert (summary.inputTokens, summary.outputTokens) == (5, 3)
+    batch_schema = calls[0]["response_format"]["json_schema"]["schema"]
+    summary_schema = calls[1]["response_format"]["json_schema"]["schema"]
+    assert list(batch_schema["properties"]) == ["items"]
+    assert list(summary_schema["properties"]) == ["summary"]
+    assert calls[1]["response_format"]["json_schema"]["name"] == "change_summary"
+    assert all(call["model"] == "anthropic/claude-sonnet-5.5" for call in calls)
 
 
 def test_review_prompt_applies_audit_corrections_and_reaudits():

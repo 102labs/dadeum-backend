@@ -216,15 +216,21 @@ def review_user_prompt(
     return json.dumps(payload, ensure_ascii=False)
 
 
-def explain_changes_system_prompt() -> str:
+_SUMMARY_FROM_ITEMS_RULE = "summary는 items에 실제로 있는 변경만 근거로 2~4개 항목을 쓴다. 일어나지 않은 수정을 적지 않는다."
+
+
+def explain_changes_system_prompt(with_summary: bool = True) -> str:
+    summary_step = (
+        "Then write a short summary of the whole rewrite from the items you just explained. " if with_summary else ""
+    )
     return (
         "You label the differences between a Korean source text and its rewritten version for the end user. "
         "For each item you receive the source span, the rewritten span, and sometimes the rewriting model's own "
         "note about that span (draft_reason). Write why the span was changed, as an editor would explain it to "
         "the author: name the concrete expression that was awkward and what it became. Judge from the two spans "
         "and their context; use draft_reason only as a hint and ignore it when it does not match the visible change. "
-        "Then write a short summary of the whole rewrite from the items you just explained. "
-        "Return only JSON matching the schema."
+        + summary_step
+        + "Return only JSON matching the schema."
     )
 
 
@@ -232,20 +238,56 @@ def explain_changes_user_prompt(
     request: RewriteRequest,
     revised_text: str,
     items: list[dict[str, Any]],
+    with_summary: bool = True,
 ) -> str:
-    payload = {
+    # Without a summary the items are one batch of a larger change list; the
+    # summary for the whole list comes from summarize_changes.
+    output_contract = [
+        "items[].index는 입력 항목의 index와 같아야 한다. 모든 입력 항목에 하나씩 답한다.",
+        "reason은 해당 항목의 original/revised 조각에 보이는 변경만 설명한다. 다른 구간이나 전체 글 이야기는 쓰지 않고, 조각에 없는 표현은 인용하지 않는다. 항목마다 다른 문장으로 쓴다.",
+        "한 구간에 변경이 둘 이상이면(예: 쉼표 삭제와 어휘 교체) 둘 다 한 문장 안에서 짧게 짚는다.",
+        "reason은 15~40자로 끝낸다. '사실관계는 그대로다' 같은 보존 확인 문구나 평가는 쓰지 않는다.",
+        "구간이 사실상 같은 뜻의 표현 교체면 그 이유를 쓰고, 뜻이 달라졌다면 type=meaning과 riskLevel=medium 이상으로 표시한다.",
+    ]
+    payload: dict[str, Any] = {
         "mode": "explain_changes",
         "settings": request_settings(request),
         "changes_contract": CHANGES_CONTRACT,
+    }
+    if with_summary:
+        payload["summary_contract"] = SUMMARY_CONTRACT
+        output_contract.append(_SUMMARY_FROM_ITEMS_RULE)
+    payload.update(
+        {
+            "output_contract": output_contract,
+            "original_text": request.text,
+            "revised_text": revised_text,
+            "items": items,
+        }
+    )
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def summarize_changes_system_prompt() -> str:
+    return (
+        "You summarize, for the end user, how a Korean source text was rewritten. "
+        "You receive the source text, the rewritten text, and every changed span with the source span, the rewritten "
+        "span, and sometimes the rewriting model's own note about that span (draft_reason). "
+        "Describe the overall direction of the edits that actually appear in the spans. "
+        "Return only JSON matching the schema."
+    )
+
+
+def summarize_changes_user_prompt(
+    request: RewriteRequest,
+    revised_text: str,
+    items: list[dict[str, Any]],
+) -> str:
+    payload = {
+        "mode": "summarize_changes",
+        "settings": request_settings(request),
         "summary_contract": SUMMARY_CONTRACT,
-        "output_contract": [
-            "items[].index는 입력 항목의 index와 같아야 한다. 모든 입력 항목에 하나씩 답한다.",
-            "reason은 해당 항목의 original/revised 조각에 보이는 변경만 설명한다. 다른 구간이나 전체 글 이야기는 쓰지 않고, 조각에 없는 표현은 인용하지 않는다. 항목마다 다른 문장으로 쓴다.",
-            "한 구간에 변경이 둘 이상이면(예: 쉼표 삭제와 어휘 교체) 둘 다 한 문장 안에서 짧게 짚는다.",
-            "reason은 15~40자로 끝낸다. '사실관계는 그대로다' 같은 보존 확인 문구나 평가는 쓰지 않는다.",
-            "구간이 사실상 같은 뜻의 표현 교체면 그 이유를 쓰고, 뜻이 달라졌다면 type=meaning과 riskLevel=medium 이상으로 표시한다.",
-            "summary는 items에 실제로 있는 변경만 근거로 2~4개 항목을 쓴다. 일어나지 않은 수정을 적지 않는다.",
-        ],
+        "output_contract": [_SUMMARY_FROM_ITEMS_RULE],
         "original_text": request.text,
         "revised_text": revised_text,
         "items": items,

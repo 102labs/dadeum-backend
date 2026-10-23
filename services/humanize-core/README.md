@@ -163,7 +163,13 @@ prepare -> rewrite -> style_gate -> audit -> (review) -> finalize
   reason to at most one group by location, then ask the provider's
   `explain_changes` (model: `HUMANIZE_EXPLAIN_MODEL_NAME`, else the rewrite
   primary) to write the user-facing reason/type/riskLevel for every group and
-  the response summary; sum tokens across all stages.
+  the response summary; sum tokens across all stages. The explain call for the
+  audited draft starts together with the model audit and is reused when the
+  audit routes straight to `finalize`; when review runs it is cancelled and the
+  review output is explained instead. More groups than
+  `HUMANIZE_EXPLAIN_BATCH_SIZE` (4) are split into even batches explained in
+  parallel, plus one `summarize_changes` call for the response summary
+  (`0` keeps a single call).
 
 Provider capability matrix:
 
@@ -182,7 +188,7 @@ The OpenRouter provider uses Chat Completions with `response_format:
 json_schema` (`strict: true`, schema normalised to `additionalProperties:
 false` with every property required) for rewrite, style repair, audit,
 review, and change explanation. Rewrite/style-repair/audit/review send the
-full `*Result` models; only the explain call sends a slim output schema.
+full `*Result` models; only the explain and summary calls send slim output schemas.
 `Change` field descriptions ride inside the schema. It sets `provider.require_parameters: true` and sends no temperature.
 Model lists are tried in order and fall through on any exception: rewrite and
 style repair use `[rewrite, rewrite fallback]`, audit `[audit, rewrite]`,
@@ -190,8 +196,9 @@ review `[review, rewrite]`. When `HUMANIZE_MODEL_NAME` is set to anything but
 `stub` it replaces the rewrite primary. Every call uses `max_tokens=20000`.
 
 Per-request LLM budget with OpenRouter: 1 rewrite (or N chunk calls) + 0-2
-style repairs + 1 audit + 0-1 review + 0-1 explain. Fast mode waits for all of it; Core sets
-no request timeout.
+style repairs + 1 audit + 0-1 review + 0-1 explain (or parallel explain batches
+plus 1 summary call), plus one draft explain that is cancelled when review runs.
+Fast mode waits for all of it; Core sets no request timeout.
 
 ## Golden-Set Eval
 

@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     chunk_target_chars: int = Field(default=1_000, alias="HUMANIZE_CHUNK_TARGET_CHARS")
     style_gate_max_rounds: int = Field(default=2, alias="HUMANIZE_STYLE_GATE_MAX_ROUNDS")
     style_gate_s2_threshold: int = Field(default=3, alias="HUMANIZE_STYLE_GATE_S2_THRESHOLD")
+    explain_batch_size: int = Field(default=4, alias="HUMANIZE_EXPLAIN_BATCH_SIZE")
     job_store_path: str = Field(default="humanize_jobs.sqlite3", alias="HUMANIZE_JOB_STORE_PATH")
     job_encryption_key: str | None = Field(default=None, alias="HUMANIZE_JOB_ENCRYPTION_KEY")
     job_worker_enabled: bool = Field(default=True, alias="HUMANIZE_JOB_WORKER_ENABLED")
