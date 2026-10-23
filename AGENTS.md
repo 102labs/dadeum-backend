@@ -58,6 +58,18 @@ mounts the named Docker volume `humanize-core-data` at `/data` inside the
 `humanize-core` container, so persistent Core runtime files should prefer
 `/data/...` paths unless a host bind mount is intentionally added.
 
+Deploy by running `services/humanize-core/deploy.sh` on the server as the
+`ubuntu` user (`--force` rebuilds the current commit). It fast-forwards the
+checked-out branch (the server currently tracks `stable-v1`), builds the new
+image while the old container keeps serving, swaps containers, and polls
+`GET /health`. A failed build leaves the running service and the checkout on
+the previous version; a failed health check retags the previous image
+(`humanize-core-humanize-core:rollback`) and resets the checkout to the previous
+commit. Local edits to tracked files (the server currently has edited
+`Caddyfile` and `docker-compose.yml`) are listed and kept; git refuses the
+fast-forward when an incoming commit touches one of them, and the script stops
+with the service untouched. Commit such config changes to retire the edits.
+
 ## Lightsail Core API
 
 Required endpoints:
