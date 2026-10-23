@@ -242,9 +242,9 @@ Responsibilities:
 - `prepare`: enforce `HUMANIZE_MAX_CHARS`; run the local regex detector (`im_not_ai/audit.py::local_detect`, ~50 rules with S1/S2/S3 severity) on the source; build compact rulebook hints (max 24 rules, up to 3 short match samples each, never spans overlapping numbers/quotes/protected terms). No LLM call.
 - `rewrite`: one structured LLM call. Text at or above `HUMANIZE_CHUNK_MIN_CHARS` (default 1,000) is split at sentence boundaries into chunks of about `HUMANIZE_CHUNK_TARGET_CHARS` and rewritten in parallel, then reassembled with the original separators. The full rulebook (`im_not_ai/resources/strict-rules.md`, bodies stripped) sits in the static system prompt; detected rules travel in the user payload with their full rule cards.
 - `style_gate`: re-run the local detector on the draft. If any S1 remains, or S2 count is at or above `HUMANIZE_STYLE_GATE_S2_THRESHOLD` (3), or the text was chunked (one transition-smoothing pass), call the provider's `style_repair` up to `HUMANIZE_STYLE_GATE_MAX_ROUNDS` (2) times. A repair is discarded if it adds completion warnings, increases preservation damage, or worsens the severity score. Skipped when the provider has no `style_repair`.
-- `audit`: local checks first: completion (empty, too short vs. original, low sentence/paragraph coverage, cut off mid-sentence) and exact preservation counts (protected terms, quotes, URLs, emails, code spans, dates, numbers/units) must not go down or up versus the source. Then, if the provider has `audit`, a model audit for harmful meaning changes is merged in. Any completion warning forces `fail`. `riskLevel` per change is set by the explain step in `finalize`, not by the audit. When the provider has `explain_changes`, the explain call for the audited draft starts together with the audit (the graph runner keeps the task per `run_token`); if the audit routes to review it is cancelled right away, otherwise `finalize` reuses it.
+- `audit`: local checks first: completion (empty, too short vs. original, low sentence/paragraph coverage, cut off mid-sentence) and exact preservation counts (protected terms, quotes, URLs, emails, code spans, dates, numbers/units) must not go down or up versus the source. Then, if the provider has `audit`, a model audit for harmful meaning changes is merged in. Any completion warning forces `fail`. `riskLevel` per change is set by the explain step in `finalize`, not by the audit.
 - `review` (conditional): entered when audit status is `fail` or `conditional_pass`, or any flagged edit needs repair (this is the pre-2026-10-09 whole-text review; the sentence-scoped segment review from `main` was reverted on `stable-v1` because it let low-severity meaning changes ship). If the provider has `review`, the model receives the full draft plus the audit record and returns the complete repaired passage; the output is re-checked locally and replaced by the local repair path if it truncated the text, damaged more preserved values, or reverted the draft wholesale to the source (draft change rate >= 5% coming back <= 1%). Without a provider `review`, the local repair path restores flagged values/sentences from the source. Style-only restores that would reintroduce an S1 violation are kept as the gated draft with a warning.
-- `finalize`: merge warnings (audit warnings and flagged-edit issues when no review ran; review warnings, final audit warnings, and blocking issues otherwise), build the display `changes` from a sequence diff of source vs. final text (every real edit is listed, snippets are cut at word boundaries, and a model-authored change is matched to at most one diff group by location, only when both its snippets still match), then send every diff group to the provider's `explain_changes` (if any) with the matched model reason as `draft_reason` hint. The explainer writes the user-facing `reason`/`type`/`riskLevel` per group and the response `summary`. The explanation started during the audit is used only when the final text and display changes are exactly the ones it was started for. Explain time grows with the number of groups, so when there are more than `HUMANIZE_EXPLAIN_BATCH_SIZE` (4) groups and the provider has `summarize_changes`, the groups are split into even contiguous batches explained in parallel (`with_summary=False`, items-only schema) while one `summarize_changes` call writes the `summary` for the whole list; `0` keeps one call. An explain failure keeps the model/generic reasons and the stage summaries, and never fails the request; with batches, a failed batch keeps generic reasons for its groups only and a failed summary call keeps the stage summaries. Review/style-gate stages do not append internal notes to `summary`. Tokens are summed across rewrite + style gate + audit + review + explain, `usage.rounds = 1 + style-gate rounds`.
+- `finalize`: merge warnings (audit warnings and flagged-edit issues when no review ran; review warnings, final audit warnings, and blocking issues otherwise), build the display `changes` from a sequence diff of source vs. final text (every real edit is listed, snippets are cut at word boundaries, and a model-authored change is matched to at most one diff group by location, only when both its snippets still match), then send every diff group to the provider's `explain_changes` (if any) with the matched model reason as `draft_reason` hint. The explainer writes the user-facing `reason`/`type`/`riskLevel` per group and the response `summary`. An explain failure keeps the model/generic reasons and the stage summaries, and never fails the request. Review/style-gate stages do not append internal notes to `summary`. Tokens are summed across rewrite + style gate + audit + review + explain, `usage.rounds = 1 + style-gate rounds`.
 
 Every stage logs `graph.stage.started / succeeded / failed` with durations and counts.
 
@@ -259,18 +259,18 @@ Every stage logs `graph.stage.started / succeeded / failed` with durations and c
 
 Production is expected to run `openrouter`. With `openai` or `anthropic` the style gate is skipped, audit/review are local rule checks only, and unexplained diff groups keep a generic reason.
 
-The structured-output schemas sent to the model for rewrite, style repair, audit, and review are the full `RewriteResult` / `AuditResult` / `StrictReviewResult` models in `im_not_ai/schemas.py` (as before 2026-10-09; the model fills bookkeeping fields such as `qualityLevel` and `rollbackRequired`, code overwrites token counts). Only the explain calls use slim schemas (`ChangeExplanationOutput`; batched calls use `ChangeExplanationItemsOutput` and `ChangeSummaryOutput`). `Change` field descriptions (reason format, `type` meanings, `riskLevel` meanings) travel inside the JSON schema and are repeated in the explain prompt as `changes_contract`.
+The structured-output schemas sent to the model for rewrite, style repair, audit, and review are the full `RewriteResult` / `AuditResult` / `StrictReviewResult` models in `im_not_ai/schemas.py` (as before 2026-10-09; the model fills bookkeeping fields such as `qualityLevel` and `rollbackRequired`, code overwrites token counts). Only the explain call uses a slim schema (`ChangeExplanationOutput`). `Change` field descriptions (reason format, `type` meanings, `riskLevel` meanings) travel inside the JSON schema and are repeated in the explain prompt as `changes_contract`.
 
 OpenRouter model selection (`llm.py::OpenRouterRewriteLLM`):
 
 - rewrite and style_repair: `[HUMANIZE_MODEL_NAME if set and not "stub" else HUMANIZE_REWRITE_MODEL_NAME, HUMANIZE_REWRITE_FALLBACK_MODEL_NAME]`
 - audit: `[HUMANIZE_STRICT_AUDIT_MODEL_NAME, primary rewrite model]`
 - review: `[HUMANIZE_STRICT_REVIEW_MODEL_NAME, primary rewrite model]`
-- explain changes and summarize changes: `[HUMANIZE_EXPLAIN_MODEL_NAME if set, primary rewrite model]`
+- explain changes: `[HUMANIZE_EXPLAIN_MODEL_NAME if set, primary rewrite model]`
 
 Models in each list are tried in order; any exception moves to the next one. When all fail the call raises `LLMResponseError`. Every call uses `max_tokens=20000` and no temperature.
 
-LLM call budget per request with `openrouter`: 1 rewrite (or N parallel chunk calls) + 0-2 style repairs + 1 audit + 0-1 review + 1 explain (skipped only when the text did not change; above the batch size, parallel batch calls + 1 summary call). When review runs, the explain started for the draft is cancelled, so it costs at most a partial call. Fast mode runs all of this synchronously; there is no request timeout in Core.
+LLM call budget per request with `openrouter`: 1 rewrite (or N parallel chunk calls) + 0-2 style repairs + 1 audit + 0-1 review + 1 explain (skipped only when the text did not change). Fast mode runs all of this synchronously; there is no request timeout in Core.
 
 ## Environment Variables
 
@@ -305,7 +305,6 @@ HUMANIZE_CHUNK_MIN_CHARS=1000                    # text at/above this is chunked
 HUMANIZE_CHUNK_TARGET_CHARS=1000
 HUMANIZE_STYLE_GATE_MAX_ROUNDS=2                 # 0 disables the style gate
 HUMANIZE_STYLE_GATE_S2_THRESHOLD=3
-HUMANIZE_EXPLAIN_BATCH_SIZE=4                    # more diff groups than this are explained in parallel batches; 0 keeps one call
 ```
 
 Strict job store and worker:
@@ -431,7 +430,7 @@ Strict async job storage may contain encrypted source payloads and encrypted fin
 
 ## Test Requirements
 
-Lightsail Core tests (`tests/test_api.py` and `tests/test_eval_golden.py`, 129 tests, all on the `stub` provider or fake LLM doubles) cover:
+Lightsail Core tests (`tests/test_api.py` and `tests/test_eval_golden.py`, 121 tests, all on the `stub` provider or fake LLM doubles) cover:
 
 - `/health` returns ok.
 - Missing or invalid API key returns `401`.
@@ -448,7 +447,6 @@ Lightsail Core tests (`tests/test_api.py` and `tests/test_eval_golden.py`, 129 t
 - Local detector rules and false-positive guards.
 - Graph routing: clean audit skips review; conditional/fail or any repair flag routes to the whole-text review; truncated, value-damaging, or wholesale-reverting review output falls back to local repair; style gate repairs and regressions; chunk split/reassembly.
 - Display changes: reasons attach to diff groups by location (a snippet absent from the final text never contributes its reason, each model change is used once), snippets end on word boundaries, every group is sent to `explain_changes` with the model reason as hint and the explainer's summary replaces the stage summaries, an explain failure keeps the generic reason; review leaves no internal notes in `summary`.
-- Explain timing: the draft explanation runs alongside a passing audit and is reused; a review-bound audit cancels it before review starts and the final text is explained; more groups than the batch size go out as even parallel batches plus one summary call; a failed batch or summary call degrades only its own part; batch and summary prompts/schemas.
 - Model-facing schemas carry no internal bookkeeping fields and do carry the `Change` field descriptions.
 - Provider request shapes for OpenAI Responses, Anthropic Messages, and OpenRouter Chat Completions (schema normalisation, usage extraction, no temperature).
 - Eval harness (`scripts/eval_golden.py`): register detection, per-case expectations, change-list quality, multi-run aggregation, baseline diff regression rules, stage telemetry capture, judge payload/schema, golden-set field validity, stub end-to-end run.

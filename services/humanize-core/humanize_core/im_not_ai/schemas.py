@@ -163,27 +163,6 @@ class ChangeExplanationOutput(BaseModel):
     summary: list[str] = Field(default_factory=list)
 
 
-class ChangeExplanationItemsOutput(BaseModel):
-    """Explain output for one batch of items; the summary is written separately."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    items: list[ChangeExplanation]
-
-
-class ChangeSummaryOutput(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    summary: list[str]
-
-
-class ChangeSummaryResult(ChangeSummaryOutput):
-    inputTokens: int = 0
-    outputTokens: int = 0
-
-
 class ChangeExplanationResult(ChangeExplanationOutput):
     inputTokens: int = 0
     outputTokens: int = 0
-    batchCount: int = 1
-    failedBatchCount: int = 0

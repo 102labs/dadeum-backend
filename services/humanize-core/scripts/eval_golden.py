@@ -279,9 +279,6 @@ def stage_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
                 summary["unexplainedChanges"] = int(details.get("unexplained_change_count", 0) or 0)
                 summary["explainedChanges"] = int(details.get("explained_change_count", 0) or 0)
                 summary["explainFailed"] = bool(details.get("explain_failed", False))
-                summary["explainPrefetched"] = bool(details.get("explain_prefetched", False))
-                summary["explainBatches"] = int(details.get("explain_batch_count", 0) or 0)
-                summary["explainFailedBatches"] = int(details.get("explain_failed_batch_count", 0) or 0)
         elif item["event"] == "graph.stage.failed":
             summary["failedStage"] = step
     return summary

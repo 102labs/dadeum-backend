@@ -1,9 +1,7 @@
 import asyncio
 import re
 import time
-import uuid
 from collections import Counter
-from dataclasses import dataclass
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -49,7 +47,6 @@ class RewriteState(TypedDict, total=False):
     request: RewriteRequest
     request_id: str
     job_id: str
-    run_token: str
     humanize_context: dict
     warnings: list[str]
     audit_result: AuditResult
@@ -66,18 +63,6 @@ class RewriteState(TypedDict, total=False):
     explain_output_tokens: int
 
 
-ExplainOutcome = tuple[list[Change], ChangeExplanationResult] | None
-
-
-@dataclass
-class _ExplainPrefetch:
-    """Change explanation started for the audited draft while the audit runs."""
-
-    revised_text: str
-    changes: list[Change]
-    task: "asyncio.Task[ExplainOutcome]"
-
-
 class RewriteGraphRunner:
     def __init__(
         self,
@@ -89,9 +74,6 @@ class RewriteGraphRunner:
         self.llm = llm
         self.debug_log = debug_logger or RewriteDebugLogger(settings)
         self.graph = self._build_graph()
-        # Keyed by run_token. Tasks cannot travel through graph state, and the
-        # runner serves concurrent requests.
-        self._explain_prefetch: dict[str, _ExplainPrefetch] = {}
 
     async def run(
         self,
@@ -100,20 +82,12 @@ class RewriteGraphRunner:
         request_id: str | None = None,
         job_id: str | None = None,
     ) -> RewriteResponse:
-        run_token = uuid.uuid4().hex
-        initial_state: RewriteState = {
-            "request": request,
-            "started_at": time.perf_counter(),
-            "run_token": run_token,
-        }
+        initial_state: RewriteState = {"request": request, "started_at": time.perf_counter()}
         if request_id:
             initial_state["request_id"] = request_id
         if job_id:
             initial_state["job_id"] = job_id
-        try:
-            state = await self.graph.ainvoke(initial_state)
-        finally:
-            await self._discard_explain_prefetch(run_token)
+        state = await self.graph.ainvoke(initial_state)
         return state["response"]
 
     def _build_graph(self):
@@ -419,19 +393,12 @@ class RewriteGraphRunner:
         try:
             request = state["request"]
             llm_result = state["llm_result"]
-            # When the audit passes, finalize explains exactly this draft, so
-            # start that call now instead of after the audit.
-            prefetch_started = self._start_explain_prefetch(state.get("run_token", ""), request, llm_result)
             audit_result = await self._audit_candidate(
                 request,
                 state["humanize_context"],
                 llm_result.revisedText,
                 llm_result.changes,
             )
-            review_required = _audit_requires_review(audit_result)
-            if review_required:
-                # Review rewrites the draft, so finalize must explain its output.
-                await self._discard_explain_prefetch(state.get("run_token", ""))
             result: RewriteState = {"audit_result": audit_result, "llm_result": llm_result}
         except Exception as exc:
             self._stage_failed(state, "audit", stage_started_at, exc)
@@ -449,9 +416,7 @@ class RewriteGraphRunner:
                 "rollback_required_count": audit_result.rollbackRequired,
                 "edits_flagged_count": audit_result.editsFlagged,
                 "edits_passed_count": audit_result.editsPassed,
-                "review_required": review_required,
-                "explain_prefetch_started": prefetch_started,
-                "explain_prefetch_cancelled": prefetch_started and review_required,
+                "review_required": _audit_requires_review(audit_result),
                 "warnings": audit_result.warnings,
                 "flagged_edits": [edit.model_dump(mode="json") for edit in audit_result.flaggedEdits],
             },
@@ -625,42 +590,27 @@ class RewriteGraphRunner:
             unexplained_count = sum(1 for change in display_safe_changes if is_unexplained_change(change))
             explained_count = 0
             explain_failed = False
-            explain_prefetched = False
-            explain_batch_count = 0
-            explain_failed_batch_count = 0
             explain_input_tokens = 0
             explain_output_tokens = 0
             explainable = [change for change in display_safe_changes if change.original or change.revised]
-            prefetch = self._explain_prefetch.pop(state.get("run_token", ""), None)
             if explainable and hasattr(self.llm, "explain_changes"):
-                if (
-                    prefetch is not None
-                    and prefetch.revised_text == llm_result.revisedText
-                    and prefetch.changes == display_safe_changes
-                ):
-                    outcome = await prefetch.task
-                    explain_prefetched = True
-                else:
-                    if prefetch is not None:
-                        await _discard_task(prefetch.task)
-                    outcome = await self._explain_or_none(
+                try:
+                    display_safe_changes, explanation = await self._explain_changes(
                         state["request"],
                         llm_result.revisedText,
                         display_safe_changes,
                     )
-                if outcome is None:
+                except LLMResponseError:
+                    # The model-authored and generic reasons are still a valid
+                    # response; never fail the rewrite because the explanation
+                    # call did.
                     explain_failed = True
                 else:
-                    display_safe_changes, explanation = outcome
                     explained_count = len(explanation.items)
-                    explain_batch_count = explanation.batchCount
-                    explain_failed_batch_count = explanation.failedBatchCount
                     explain_input_tokens = explanation.inputTokens
                     explain_output_tokens = explanation.outputTokens
                     if explanation.summary:
                         summary = [item.strip() for item in explanation.summary if item.strip()]
-            elif prefetch is not None:
-                await _discard_task(prefetch.task)
             latency_ms = int((time.perf_counter() - state["started_at"]) * 1000)
             response = RewriteResponse(
                 revisedText=llm_result.revisedText,
@@ -691,9 +641,6 @@ class RewriteGraphRunner:
                 "unexplained_change_count": unexplained_count,
                 "explained_change_count": explained_count,
                 "explain_failed": explain_failed,
-                "explain_prefetched": explain_prefetched,
-                "explain_batch_count": explain_batch_count,
-                "explain_failed_batch_count": explain_failed_batch_count,
                 "explain_input_tokens": explain_input_tokens,
                 "explain_output_tokens": explain_output_tokens,
                 "revised_text_length": len(response.revisedText),
@@ -728,7 +675,7 @@ class RewriteGraphRunner:
             for index, change in enumerate(changes)
             if change.original or change.revised
         ]
-        explanation = await self._explain_items(
+        explanation: ChangeExplanationResult = await self.llm.explain_changes(  # type: ignore[attr-defined]
             request,
             revised_text,
             [
@@ -751,103 +698,6 @@ class RewriteGraphRunner:
                 update={"reason": item.reason.strip(), "type": item.type, "riskLevel": item.riskLevel}
             )
         return explained, explanation
-
-    async def _explain_items(
-        self,
-        request: RewriteRequest,
-        revised_text: str,
-        items: list[dict[str, object]],
-    ) -> ChangeExplanationResult:
-        batches = _explain_batches(items, self.settings.explain_batch_size)
-        if len(batches) == 1 or not hasattr(self.llm, "summarize_changes"):
-            return await self.llm.explain_changes(request, revised_text, items)  # type: ignore[attr-defined]
-
-        # Explain time grows with the number of reasons written, so batches of
-        # items are explained in parallel while one more call writes the
-        # summary for the whole list.
-        outcomes = await asyncio.gather(
-            self.llm.summarize_changes(request, revised_text, items),  # type: ignore[attr-defined]
-            *(
-                self.llm.explain_changes(request, revised_text, batch, with_summary=False)  # type: ignore[attr-defined]
-                for batch in batches
-            ),
-            return_exceptions=True,
-        )
-        for outcome in outcomes:
-            if isinstance(outcome, BaseException) and not isinstance(outcome, LLMResponseError):
-                raise outcome
-        summary_result, *batch_results = outcomes
-        explained = [result for result in batch_results if not isinstance(result, BaseException)]
-        if not explained:
-            raise LLMResponseError("every explain batch failed")
-        succeeded = explained if isinstance(summary_result, BaseException) else [summary_result, *explained]
-        return ChangeExplanationResult(
-            items=[item for result in explained for item in result.items],
-            summary=[] if isinstance(summary_result, BaseException) else summary_result.summary,
-            inputTokens=sum(result.inputTokens for result in succeeded),
-            outputTokens=sum(result.outputTokens for result in succeeded),
-            batchCount=len(batches),
-            failedBatchCount=len(batches) - len(explained),
-        )
-
-    async def _explain_or_none(
-        self,
-        request: RewriteRequest,
-        revised_text: str,
-        changes: list[Change],
-    ) -> ExplainOutcome:
-        try:
-            return await self._explain_changes(request, revised_text, changes)
-        except LLMResponseError:
-            # The model-authored and generic reasons are still a valid
-            # response; never fail the rewrite because the explanation call did.
-            return None
-
-    def _start_explain_prefetch(
-        self,
-        run_token: str,
-        request: RewriteRequest,
-        llm_result: LLMRewriteResult,
-    ) -> bool:
-        if not run_token or not hasattr(self.llm, "explain_changes"):
-            return False
-        changes = build_display_safe_changes(request.text, llm_result.revisedText, llm_result.changes)
-        if not any(change.original or change.revised for change in changes):
-            return False
-        self._explain_prefetch[run_token] = _ExplainPrefetch(
-            revised_text=llm_result.revisedText,
-            changes=changes,
-            task=asyncio.create_task(self._explain_or_none(request, llm_result.revisedText, changes)),
-        )
-        return True
-
-    async def _discard_explain_prefetch(self, run_token: str) -> None:
-        prefetch = self._explain_prefetch.pop(run_token, None)
-        if prefetch is not None:
-            await _discard_task(prefetch.task)
-
-
-async def _discard_task(task: "asyncio.Task[ExplainOutcome]") -> None:
-    # Cancelling stops paying for an answer nobody will read; gathering
-    # retrieves whatever the task ended with so it is never reported unhandled.
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-
-
-def _explain_batches(items: list[dict[str, object]], batch_size: int) -> list[list[dict[str, object]]]:
-    if batch_size <= 0 or len(items) <= batch_size:
-        return [items]
-    # Even, contiguous batches: the largest batch sets the wait, and adjacent
-    # spans stay together.
-    count = -(-len(items) // batch_size)
-    base, extra = divmod(len(items), count)
-    batches: list[list[dict[str, object]]] = []
-    start = 0
-    for position in range(count):
-        end = start + base + (1 if position < extra else 0)
-        batches.append(items[start:end])
-        start = end
-    return batches
 
 
 def _route_after_audit(state: RewriteState) -> str:

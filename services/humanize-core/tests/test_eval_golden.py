@@ -278,27 +278,6 @@ def test_stage_summary_condenses_graph_events():
     assert summary["durationsMs"] == {"rewrite": 10, "style_gate": 20, "audit": 5, "review": 7}
 
 
-def test_stage_summary_records_how_changes_were_explained():
-    events = [
-        {
-            "event": "graph.stage.succeeded",
-            "step": "finalize",
-            "duration_ms": 3,
-            "details": {
-                "explained_change_count": 6,
-                "explain_prefetched": True,
-                "explain_batch_count": 2,
-                "explain_failed_batch_count": 1,
-            },
-        },
-    ]
-    summary = eval_golden.stage_summary(events)
-    assert summary["explainedChanges"] == 6
-    assert summary["explainPrefetched"] is True
-    assert summary["explainBatches"] == 2
-    assert summary["explainFailedBatches"] == 1
-
-
 def test_stage_recorder_takes_only_matching_request_events():
     recorder = eval_golden.StageRecorder()
     recorder.event("graph.stage.succeeded", request_id="a", step="rewrite", details={})
